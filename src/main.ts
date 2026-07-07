@@ -37,7 +37,8 @@ import { renderMobileNav } from './ui/mobile-nav';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
 // 1. Setup App Shell
-app.innerHTML = `
+export function initApp() {
+  app.innerHTML = `
   <div class="app-container">
     <aside class="sidebar"></aside>
     <div class="mobile-header">
@@ -48,132 +49,135 @@ app.innerHTML = `
   </div>
 `;
 
-// 2. Render Global Components
-const sidebar = app.querySelector('.sidebar') as HTMLElement;
-renderSidebar(sidebar);
+  // 2. Render Global Components
+  const sidebar = app.querySelector('.sidebar') as HTMLElement;
+  renderSidebar(sidebar);
 
-const mobileNavContainer = app.querySelector('#mobile-nav-container') as HTMLElement;
-renderMobileNav(mobileNavContainer);
+  const mobileNavContainer = app.querySelector('#mobile-nav-container') as HTMLElement;
+  renderMobileNav(mobileNavContainer);
 
-// 3. Setup Navigation Logic
-const menuToggles = app.querySelectorAll('.menu-toggle');
-menuToggles.forEach((toggle) => {
-  toggle.addEventListener('click', () => {
-    sidebar.classList.toggle('open');
-  });
-});
-
-// Close sidebar when a link is clicked
-sidebar.addEventListener('click', (e) => {
-  if ((e.target as HTMLElement).closest('a')) {
-    sidebar.classList.remove('open');
-  }
-});
-
-const mainContent = app.querySelector('.main-content') as HTMLElement;
-
-// 4. Router Setup
-const routes = {
-  '/vision/object_detector': {
-    setup: setupObjectDetector,
-    cleanup: cleanupObjectDetector,
-    label: 'Object Detector',
-  },
-  '/vision/face_detector': { setup: setupFaceDetector, cleanup: cleanupFaceDetector, label: 'Face Detector' },
-  '/vision/face_landmarker': { setup: setupFaceLandmarker, cleanup: cleanupFaceLandmarker, label: 'Face Landmarker' },
-  '/vision/hand_landmarker': { setup: setupHandLandmarker, cleanup: cleanupHandLandmarker, label: 'Hand Landmarker' },
-  '/vision/pose_landmarker': { setup: setupPoseLandmarker, cleanup: cleanupPoseLandmarker, label: 'Pose Landmarker' },
-  '/vision/holistic_landmarker': {
-    setup: setupHolisticLandmarker,
-    cleanup: cleanupHolisticLandmarker,
-    label: 'Holistic Landmarker',
-  },
-  '/vision/image_classifier': {
-    setup: setupImageClassifier,
-    cleanup: cleanupImageClassifier,
-    label: 'Image Classifier',
-  },
-  '/vision/gesture_recognizer': {
-    setup: setupGestureRecognizer,
-    cleanup: cleanupGestureRecognizer,
-    label: 'Gesture Recognizer',
-  },
-  '/vision/interactive_segmenter': {
-    setup: setupInteractiveSegmenter,
-    cleanup: cleanupInteractiveSegmenter,
-    label: 'Interactive Segmenter',
-  },
-  '/vision/image_segmenter': {
-    setup: setupImageSegmenter,
-    cleanup: cleanupImageSegmenter,
-    label: 'Image Segmenter',
-  },
-  '/vision/image_embedder': { setup: setupImageEmbedder, cleanup: cleanupImageEmbedder, label: 'Image Embedder' },
-  '/audio/audio_classifier': {
-    setup: setupAudioClassifier,
-    cleanup: cleanupAudioClassifier,
-    label: 'Audio Classifier',
-  },
-  '/text/text_classifier': {
-    setup: setupTextClassifier,
-    cleanup: cleanupTextClassifier,
-    label: 'Text Classifier',
-  },
-  '/text/language_detector': {
-    setup: setupLanguageDetector,
-    cleanup: cleanupLanguageDetector,
-    label: 'Language Detector',
-  },
-  '/text/text_embedder': { setup: setupTextEmbedder, cleanup: cleanupTextEmbedder, label: 'Text Embedder' },
-};
-
-let currentCleanup: (() => void) | undefined;
-
-async function router() {
-  let hash = window.location.hash.slice(1);
-
-  // Handle root or invalid routes by defaulting to object detector
-  if (!hash || !routes[hash as keyof typeof routes]) {
-    hash = '/vision/object_detector';
-    window.location.hash = hash;
-  }
-
-  const route = routes[hash as keyof typeof routes];
-
-  // Cleanup previous task
-  if (currentCleanup) {
-    currentCleanup();
-    currentCleanup = undefined;
-  }
-
-  // Clear main content area only
-  mainContent.innerHTML = '';
-
-  // Setup new task
-  if (route) {
-    await route.setup(mainContent);
-    currentCleanup = route.cleanup;
-    document.title = `${route.label} - MediaPipe Web Task Demo`;
-
-    // Update active state in sidebar
-    const links = sidebar.querySelectorAll('a');
-    links.forEach((l) => {
-      if (l.getAttribute('href') === `#${hash}`) l.classList.add('active');
-      else l.classList.remove('active');
+  // 3. Setup Navigation Logic
+  const menuToggles = app.querySelectorAll('.menu-toggle');
+  menuToggles.forEach((toggle) => {
+    toggle.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
     });
+  });
+
+  // Close sidebar when a link is clicked
+  sidebar.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('a')) {
+      sidebar.classList.remove('open');
+    }
+  });
+
+  const mainContent = app.querySelector('.main-content') as HTMLElement;
+
+  // 4. Router Setup
+  const routes = {
+    '/vision/object_detector': {
+      setup: setupObjectDetector,
+      cleanup: cleanupObjectDetector,
+      label: 'Object Detector',
+    },
+    '/vision/face_detector': { setup: setupFaceDetector, cleanup: cleanupFaceDetector, label: 'Face Detector' },
+    '/vision/face_landmarker': { setup: setupFaceLandmarker, cleanup: cleanupFaceLandmarker, label: 'Face Landmarker' },
+    '/vision/hand_landmarker': { setup: setupHandLandmarker, cleanup: cleanupHandLandmarker, label: 'Hand Landmarker' },
+    '/vision/pose_landmarker': { setup: setupPoseLandmarker, cleanup: cleanupPoseLandmarker, label: 'Pose Landmarker' },
+    '/vision/holistic_landmarker': {
+      setup: setupHolisticLandmarker,
+      cleanup: cleanupHolisticLandmarker,
+      label: 'Holistic Landmarker',
+    },
+    '/vision/image_classifier': {
+      setup: setupImageClassifier,
+      cleanup: cleanupImageClassifier,
+      label: 'Image Classifier',
+    },
+    '/vision/gesture_recognizer': {
+      setup: setupGestureRecognizer,
+      cleanup: cleanupGestureRecognizer,
+      label: 'Gesture Recognizer',
+    },
+    '/vision/interactive_segmenter': {
+      setup: setupInteractiveSegmenter,
+      cleanup: cleanupInteractiveSegmenter,
+      label: 'Interactive Segmenter',
+    },
+    '/vision/image_segmenter': {
+      setup: setupImageSegmenter,
+      cleanup: cleanupImageSegmenter,
+      label: 'Image Segmenter',
+    },
+    '/vision/image_embedder': { setup: setupImageEmbedder, cleanup: cleanupImageEmbedder, label: 'Image Embedder' },
+    '/audio/audio_classifier': {
+      setup: setupAudioClassifier,
+      cleanup: cleanupAudioClassifier,
+      label: 'Audio Classifier',
+    },
+    '/text/text_classifier': {
+      setup: setupTextClassifier,
+      cleanup: cleanupTextClassifier,
+      label: 'Text Classifier',
+    },
+    '/text/language_detector': {
+      setup: setupLanguageDetector,
+      cleanup: cleanupLanguageDetector,
+      label: 'Language Detector',
+    },
+    '/text/text_embedder': { setup: setupTextEmbedder, cleanup: cleanupTextEmbedder, label: 'Text Embedder' },
+  };
+
+  let currentCleanup: (() => void) | undefined;
+
+  async function router() {
+    let hash = window.location.hash.slice(1);
+
+    // Handle root or invalid routes by defaulting to object detector
+    if (!hash || !routes[hash as keyof typeof routes]) {
+      hash = '/vision/object_detector';
+      window.location.hash = hash;
+    }
+
+    const route = routes[hash as keyof typeof routes];
+
+    // Cleanup previous task
+    if (currentCleanup) {
+      currentCleanup();
+      currentCleanup = undefined;
+    }
+
+    // Clear main content area only
+    mainContent.innerHTML = '';
+
+    // Setup new task
+    if (route) {
+      await route.setup(mainContent);
+      currentCleanup = route.cleanup;
+      document.title = `${route.label} - MediaPipe Web Task Demo`;
+
+      // Update active state in sidebar
+      const links = sidebar.querySelectorAll('a');
+      links.forEach((l) => {
+        if (l.getAttribute('href') === `#${hash}`) l.classList.add('active');
+        else l.classList.remove('active');
+      });
+    }
   }
+
+  window.addEventListener('hashchange', router);
+  window.addEventListener('load', router);
+
+  // Initialize router immediately to handle initial load
+  router();
+
+  // Expose cleanup method for testing environments to prevent leaks between tests
+  (window as any).cleanupActiveTask = () => {
+    if (currentCleanup) {
+      currentCleanup();
+      currentCleanup = undefined;
+    }
+  };
 }
 
-window.addEventListener('hashchange', router);
-window.addEventListener('load', router);
-
-// Initialize router immediately to handle initial load
-router();
-
-// Expose cleanup method for testing environments to prevent leaks between tests
-(window as any).cleanupActiveTask = () => {
-  if (currentCleanup) {
-    currentCleanup();
-    currentCleanup = undefined;
-  }
-};
+(window as any).startApp = initApp;

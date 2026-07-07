@@ -1,24 +1,145 @@
 <div class="task-container">
   <!-- Controls on Left -->
   <div class="controls-panel">
-    <!-- Model Section -->
-    <div class="section-title">Model Selection</div>
+    <!-- Replace your existing control panel with this structure -->
+    <div class="derm-dashboard">
+      <div class="dashboard-header">
+        <h3>AyurGenX Skin Analysis</h3>
+        <span class="live-indicator"><span class="dot"></span> Live</span>
+      </div>
+
+      <table class="derm-table">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Value</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🔴</span>
+                <div>
+                  <strong>Erythema</strong>
+                  <small>Vascular redness</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-erythema" class="value-cell">--</td>
+            <td id="stat-erythema" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">✨</span>
+                <div>
+                  <strong>Luminance</strong>
+                  <small>Skin glow / Variance</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-luminance" class="value-cell">--</td>
+            <td id="stat-luminance" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🟤</span>
+                <div>
+                  <strong>Melanin</strong>
+                  <small>Pigmentation index</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-melanin" class="value-cell">--</td>
+            <td id="stat-melanin" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🕳️</span>
+                <div>
+                  <strong>Pore Density</strong>
+                  <small>Texture variance</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-pores" class="value-cell">--</td>
+            <td id="stat-pores" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🕳️</span>
+                <div>
+                  <strong>Yellowness</strong>
+                  <small>Jaundice</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-yellowness" class="value-cell">--</td>
+            <td id="stat-yellowness" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🕳️</span>
+                <div>
+                  <strong>Heamoglobin</strong>
+                  <small>Oxygen in Blood </small>
+                </div>
+              </div>
+            </td>
+            <td id="val-hemoglobin" class="value-cell">--</td>
+            <td id="stat-hemoglobin" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🕳️</span>
+                <div>
+                  <strong>Fatigue</strong>
+                  <small>Oxygen in Blood </small>
+                </div>
+              </div>
+            </td>
+            <td id="val-fatigue" class="value-cell">--</td>
+            <td id="stat-fatigue" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🕳️</span>
+                <div>
+                  <strong>Heart Rate</strong>
+                  <small>BPM </small>
+                </div>
+              </div>
+            </td>
+            <td id="val-heartrate" class="value-cell">--</td>
+            <td id="stat-heartrate" class="status-cell">--</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!-- <div class="section-title">Model Selection</div> -->
     <div id="model-selector-container"></div>
 
-    <div class="divider"></div>
+    <!-- <div class="divider"></div> -->
 
-    <!-- Settings Section -->
-    <div class="section-title">Settings</div>
+    <!-- <div class="section-title">Settings</div> -->
 
-    <div class="control-group">
+    <!-- <div class="control-group">
       <div class="control-label">
         <span>Num Faces</span>
         <span id="num-faces-value" class="value-badge">1</span>
       </div>
       <input type="range" id="num-faces" min="1" max="10" step="1" value="1" class="range-slider" />
-    </div>
+    </div> -->
 
-    <div class="control-group">
+    <!-- <div class="control-group">
       <div class="control-label">
         <span>Min Detection Confidence</span>
         <span id="min-face-detection-confidence-value" class="value-badge">0.5</span>
@@ -68,14 +189,14 @@
           <option value="CPU">CPU</option>
         </select>
       </div>
-    </div>
+    </div> -->
 
-    <div class="divider"></div>
+    <!-- <div class="divider"></div> -->
 
-    <div class="status-group">
+    <!-- <div class="status-group">
       <div id="status-message" class="status-message">Ready</div>
       <div id="inference-time" class="inference-time">Inference Time: - ms</div>
-    </div>
+    </div> -->
   </div>
 
   <!-- Output on Right -->

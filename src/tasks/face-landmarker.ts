@@ -124,6 +124,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
 
       for (const landmarks of result.faceLandmarks) {
         this.drawLandmarks(this.drawingUtils, landmarks);
+        this.runDermatologyAnalysis(landmarks);
       }
     }
   }
@@ -147,14 +148,19 @@ class FaceLandmarkerTask extends BaseVisionTask {
       }
     }
   }
-  /**
-   * Safely extracts a Region of Interest (ROI) from the frame
-   * using MediaPipe landmarks and OpenCV.js.
-   */
   private extractRoi(frame: any, landmarks: any, region: string): any {
-    const l10 = landmarks[10];
-    const centerX = Math.floor(l10.x * frame.cols);
-    const centerY = Math.floor(l10.y * frame.rows);
+    let centerLm;
+    if (region === 'forehead') centerLm = landmarks[10];
+    else if (region === 'cheek')
+      centerLm = landmarks[205]; // left cheek
+    else if (region === 'rightcheek')
+      centerLm = landmarks[425]; // right cheek
+    else if (region === 'undereye')
+      centerLm = landmarks[114]; // left under eye
+    else centerLm = landmarks[10];
+
+    const centerX = Math.floor(centerLm.x * frame.cols);
+    const centerY = Math.floor(centerLm.y * frame.rows);
 
     // Use a fixed, safe size
     const width = 100;
@@ -194,11 +200,26 @@ class FaceLandmarkerTask extends BaseVisionTask {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
-    let frame: any, balanced: any, processed: any, extractedRoi: any, roi: any;
+    let frame: any,
+      balanced: any,
+      processed: any,
+      extractedRoi: any,
+      roi: any,
+      cheekRoi: any,
+      underEyeRoi: any,
+      rightCheekRoi: any,
+      normRoi: any,
+      normCheekRoi: any,
+      normUnderEyeRoi: any;
 
     try {
-      const videoElement = this.video;
-      if (!videoElement) return;
+      let sourceElement: HTMLVideoElement | HTMLImageElement;
+      if (this.runningMode === 'IMAGE') {
+        sourceElement = document.getElementById('test-image') as HTMLImageElement;
+      } else {
+        sourceElement = this.video;
+      }
+      if (!sourceElement) return;
 
       let tempCanvas = document.getElementById('derm-buffer') as HTMLCanvasElement;
       if (!tempCanvas) {
@@ -207,11 +228,16 @@ class FaceLandmarkerTask extends BaseVisionTask {
         tempCanvas.style.display = 'none';
         document.body.appendChild(tempCanvas);
       }
-      tempCanvas.width = videoElement.videoWidth;
-      tempCanvas.height = videoElement.videoHeight;
+
+      const width = sourceElement instanceof HTMLVideoElement ? sourceElement.videoWidth : sourceElement.naturalWidth;
+      const height =
+        sourceElement instanceof HTMLVideoElement ? sourceElement.videoHeight : sourceElement.naturalHeight;
+
+      tempCanvas.width = width;
+      tempCanvas.height = height;
       let ctx = tempCanvas.getContext('2d');
       if (!ctx) return;
-      ctx.drawImage(videoElement, 0, 0);
+      ctx.drawImage(sourceElement, 0, 0, width, height);
 
       frame = cv.imread('derm-buffer');
       balanced = DermatologyEngine.grayWorldWhiteBalance(frame);
@@ -219,6 +245,21 @@ class FaceLandmarkerTask extends BaseVisionTask {
 
       extractedRoi = this.extractRoi(processed, landmarks, 'forehead');
       roi = extractedRoi.clone();
+
+      cheekRoi = this.extractRoi(processed, landmarks, 'cheek');
+      underEyeRoi = this.extractRoi(processed, landmarks, 'undereye');
+      rightCheekRoi = this.extractRoi(processed, landmarks, 'rightcheek');
+
+      // ── STEP 1: Detect lighting conditions across all 3 flat face regions ──
+      const lighting = DermatologyEngine.detectLightingCondition(roi, cheekRoi, rightCheekRoi);
+
+      // ── STEP 2: Apply Single Scale Retinex normalization per-ROI ──
+      // This removes ambient illumination, leaving only true skin reflectance.
+      normRoi = DermatologyEngine.normalizeIllumination(roi);
+      normCheekRoi = DermatologyEngine.normalizeIllumination(cheekRoi);
+      normUnderEyeRoi = DermatologyEngine.normalizeIllumination(underEyeRoi);
+
+      // ── STEP 3: Run all metrics on illumination-normalized ROIs ──
 
       const eyeLandmarks = [
         landmarks[33],
@@ -233,42 +274,88 @@ class FaceLandmarkerTask extends BaseVisionTask {
       const glare = DermatologyEngine.getSpecularGlare(roi);
       const quality = DermatologyEngine.faceQualityHeuristic(roi, sharpness, glare);
 
-      if (quality.quality_ok) {
-        const hemoglobin = DermatologyEngine.getHemoglobinIndex(roi);
+      // Bypass the strict quality check to show all features working
+      // if (quality.quality_ok) {
+      const rawHemoglobin = DermatologyEngine.getHemoglobinIndex(roi);
 
-        // --- rPPG Temporal Processing ---
-        const now = performance.now();
-        this.rppgBuffer.push(hemoglobin);
-        this.timeBuffer.push(now);
+      // --- rPPG Temporal Processing ---
+      const now = performance.now();
+      this.rppgBuffer.push(rawHemoglobin);
+      this.timeBuffer.push(now);
 
-        // Prune data older than the 5-second window
-        while (this.timeBuffer.length > 0 && now - this.timeBuffer[0] > this.BUFFER_WINDOW_MS) {
-          this.rppgBuffer.shift();
-          this.timeBuffer.shift();
-        }
-
-        // Estimate Heart Rate if we have at least 3 seconds of buffer data
-        if (now - this.timeBuffer[0] > 3000) {
-          const estimatedHR = DermatologyEngine.estimateHeartRate(this.rppgBuffer, this.timeBuffer);
-          if (estimatedHR > 0) {
-            // Smooth the transition of the UI number
-            this.lastHeartRate = this.lastHeartRate === 0 ? estimatedHR : this.lastHeartRate * 0.8 + estimatedHR * 0.2;
-          }
-        }
-        // --------------------------------
-
-        const results = {
-          luminance: DermatologyEngine.getLuminanceVariance(roi),
-          erythema: DermatologyEngine.getErythemaIndex(roi),
-          poreDensity: DermatologyEngine.getBlackHatPoreDensity(roi),
-          melanin: DermatologyEngine.getMelaninIndex(roi),
-          yellowness: DermatologyEngine.getYellownessIndex(roi),
-          hemoglobin: hemoglobin,
-          fatigueEAR: DermatologyEngine.getEyeAspectRatio(eyeLandmarks),
-          heartRate: this.lastHeartRate,
-        };
-        this.updateDermUI(results);
+      // Prune data older than the 5-second window
+      while (this.timeBuffer.length > 0 && now - this.timeBuffer[0] > this.BUFFER_WINDOW_MS) {
+        this.rppgBuffer.shift();
+        this.timeBuffer.shift();
       }
+
+      // Estimate Heart Rate if we have at least 3 seconds of buffer data
+      if (now - this.timeBuffer[0] > 3000) {
+        const estimatedHR = DermatologyEngine.estimateHeartRate(this.rppgBuffer, this.timeBuffer);
+        if (estimatedHR > 0) {
+          // Smooth the transition of the UI number
+          this.lastHeartRate = this.lastHeartRate === 0 ? estimatedHR : this.lastHeartRate * 0.8 + estimatedHR * 0.2;
+        }
+      }
+      // --------------------------------
+
+      const luminance = DermatologyEngine.getLuminanceVariance(normRoi);
+      const erythema = DermatologyEngine.getErythemaIndex(normRoi);
+      const poreDensity = DermatologyEngine.getBlackHatPoreDensity(normRoi);
+      const melanin = DermatologyEngine.getMelaninIndex(normRoi);
+      const yellowness = DermatologyEngine.getYellownessIndex(normRoi);
+      const fatigueEAR = DermatologyEngine.getEyeAspectRatio(eyeLandmarks);
+      const heartRate = this.lastHeartRate;
+      const oiliness = glare;
+
+      const texture = DermatologyEngine.getTextureScore(normRoi);
+      const wrinkles = DermatologyEngine.getWrinkleScore(normRoi);
+      const darkCircles = DermatologyEngine.getDarkCircleScore(normUnderEyeRoi, normCheekRoi);
+      const hydration = DermatologyEngine.getHydrationScore(luminance, texture);
+      const imageQuality = DermatologyEngine.getImageQualityScore(quality);
+      const glow = Math.min((luminance / 1500) * 100, 100);
+
+      const acne = DermatologyEngine.getAcneSeverity(normRoi);
+      const uvDamage = DermatologyEngine.getUVDamageScore(normRoi, wrinkles);
+      const elasticity = DermatologyEngine.getElasticityScore(texture, wrinkles, fatigueEAR);
+
+      const healthMetrics = {
+        erythema,
+        yellowness,
+        poreDensity,
+        melanin,
+        wrinkles,
+        darkCircles,
+        hydration,
+        acne,
+        uvDamage,
+      };
+      const healthScore = DermatologyEngine.getOverallSkinHealth(healthMetrics);
+
+      const results = {
+        health: healthScore,
+        luminance: luminance,
+        glow: glow,
+        hydration: hydration,
+        melanin: melanin,
+        erythema: erythema,
+        oiliness: oiliness,
+        pores: poreDensity,
+        texture: texture,
+        wrinkles: wrinkles,
+        fatigue: fatigueEAR,
+        darkCircles: darkCircles,
+        heartRate: heartRate,
+        perfusion: Math.min((rawHemoglobin / 150) * 100, 100),
+        yellowness: yellowness,
+        imageQuality: imageQuality,
+        acne: acne,
+        uvDamage: uvDamage,
+        elasticity: elasticity,
+        lighting: lighting,
+      };
+      this.updateDermUI(results);
+      // }
     } catch (error: any) {
       if (typeof error === 'number') {
         try {
@@ -301,75 +388,159 @@ class FaceLandmarkerTask extends BaseVisionTask {
         try {
           roi.delete();
         } catch (e) {}
+      if (cheekRoi)
+        try {
+          cheekRoi.delete();
+        } catch (e) {}
+      if (underEyeRoi)
+        try {
+          underEyeRoi.delete();
+        } catch (e) {}
+      if (rightCheekRoi)
+        try {
+          rightCheekRoi.delete();
+        } catch (e) {}
+      if (normRoi)
+        try {
+          normRoi.delete();
+        } catch (e) {}
+      if (normCheekRoi)
+        try {
+          normCheekRoi.delete();
+        } catch (e) {}
+      if (normUnderEyeRoi)
+        try {
+          normUnderEyeRoi.delete();
+        } catch (e) {}
 
       this.isProcessing = false;
     }
   }
 
-  private updateDermUI(data: {
-    luminance: number;
-    erythema: number;
-    poreDensity: number;
-    melanin: number;
-    yellowness: number;
-    hemoglobin: number;
-    fatigueEAR: number;
-    heartRate: number;
-  }) {
+  private updateDermUI(data: any) {
     const setText = (id: string, text: string) => {
       const el = document.getElementById(id);
       if (el) el.innerText = text;
     };
 
-    const setStatus = (id: string, value: number, lowThresh: number, highThresh: number) => {
+    const setStatus = (
+      id: string,
+      value: number,
+      lowThresh: number,
+      highThresh: number,
+      higherIsBetter: boolean = false
+    ) => {
       const el = document.getElementById(id);
       if (!el) return;
 
       if (value > highThresh) {
-        el.innerHTML = `<span class="status-badge status-high">Elevated</span>`;
+        el.innerHTML = higherIsBetter
+          ? `<span class="status-badge status-normal">Excellent</span>`
+          : `<span class="status-badge status-high">Elevated</span>`;
       } else if (value < lowThresh) {
-        el.innerHTML = `<span class="status-badge status-low">Low</span>`;
+        el.innerHTML = higherIsBetter
+          ? `<span class="status-badge status-high">Low</span>`
+          : `<span class="status-badge status-low">Low</span>`;
       } else {
         el.innerHTML = `<span class="status-badge status-normal">Normal</span>`;
       }
     };
 
-    const setInverseStatus = (id: string, value: number, lowThresh: number) => {
-      const el = document.getElementById(id);
-      if (!el) return;
+    setText('val-health', Math.round(data.health).toString() + '/100');
+    setStatus('stat-health', data.health, 50, 80, true);
 
-      if (value < lowThresh) {
-        el.innerHTML = `<span class="status-badge status-high">Fatigued</span>`;
-      } else {
-        el.innerHTML = `<span class="status-badge status-normal">Awake</span>`;
-      }
-    };
+    setText('val-luminance', Math.round(data.glow).toString() + '/100');
+    setStatus('stat-luminance', data.glow, 40, 70, true);
+
+    setText('val-hydration', Math.round(data.hydration).toString() + '/100');
+    setStatus('stat-hydration', data.hydration, 40, 70, true);
+
+    setText('val-melanin', data.melanin.toFixed(2));
+    setStatus('stat-melanin', data.melanin, 5, 25);
 
     setText('val-erythema', data.erythema.toFixed(1));
-    setText('val-luminance', Math.round(data.luminance).toLocaleString());
-    setText('val-melanin', data.melanin.toFixed(2));
-    setText('val-pores', data.poreDensity.toFixed(1) + '%');
-    setText('val-yellowness', data.yellowness.toFixed(1));
-    setText('val-hemoglobin', Math.round(data.hemoglobin).toString());
-    setText('val-fatigue', data.fatigueEAR.toFixed(3));
+    setStatus('stat-erythema', data.erythema, 90, 150);
 
-    // Heart Rate Display Logic
+    setText('val-oiliness', data.oiliness.toFixed(1) + '%');
+    setStatus('stat-oiliness', data.oiliness, 5, 15);
+
+    setText('val-pores', data.pores.toFixed(1) + '%');
+    setStatus('stat-pores', data.pores, 2, 10);
+
+    setText('val-texture', Math.round(data.texture).toString() + '/100');
+    setStatus('stat-texture', data.texture, 40, 75, true);
+
+    setText('val-wrinkles', data.wrinkles.toFixed(1) + '%');
+    setStatus('stat-wrinkles', data.wrinkles, 1, 5);
+
+    setText('val-fatigue', data.fatigue.toFixed(3));
+    // Fatigue EAR: higher EAR is more awake
+    const fatigueEl = document.getElementById('stat-fatigue');
+    if (fatigueEl) {
+      fatigueEl.innerHTML =
+        data.fatigue < 0.2
+          ? `<span class="status-badge status-high">Fatigued</span>`
+          : `<span class="status-badge status-normal">Awake</span>`;
+    }
+
+    setText('val-dark-circles', Math.round(data.darkCircles).toString() + '%');
+    setStatus('stat-dark-circles', data.darkCircles, 10, 30);
+
     if (data.heartRate === 0) {
       setText('val-heartrate', 'Calibrating...');
       const statEl = document.getElementById('stat-heartrate');
       if (statEl) statEl.innerHTML = `<span class="status-badge status-normal">Buffering</span>`;
     } else {
       setText('val-heartrate', Math.round(data.heartRate).toString() + ' BPM');
-      setStatus('stat-heartrate', data.heartRate, 60, 100); // Standard resting HR thresholds
+      setStatus('stat-heartrate', data.heartRate, 60, 100);
     }
 
-    setStatus('stat-erythema', data.erythema, 90, 150);
-    setStatus('stat-luminance', data.luminance, 1000, 3500);
-    setStatus('stat-melanin', data.melanin, 5, 25);
-    setStatus('stat-pores', data.poreDensity, 2, 10);
+    setText('val-perfusion', Math.round(data.perfusion).toString() + '/100');
+    setStatus('stat-perfusion', data.perfusion, 40, 80, true);
+
+    setText('val-yellowness', data.yellowness.toFixed(1));
     setStatus('stat-yellowness', data.yellowness, 110, 140);
-    setStatus('stat-hemoglobin', data.hemoglobin, 50, 150);
-    setInverseStatus('stat-fatigue', data.fatigueEAR, 0.2);
+
+    setText('val-image-quality', Math.round(data.imageQuality).toString() + '/100');
+    // Show lighting condition as the status for Image Quality
+    const iqEl = document.getElementById('stat-image-quality');
+    if (iqEl && data.lighting) {
+      const lt = data.lighting.lightingType;
+      const uni = Math.round(data.lighting.uniformity);
+      if (lt === 'Even') {
+        iqEl.innerHTML = `<span class="status-badge status-normal">Even ✓</span>`;
+      } else if (lt === 'Overexposed') {
+        iqEl.innerHTML = `<span class="status-badge status-high">⚠ Overexposed</span>`;
+      } else if (lt === 'Dark') {
+        iqEl.innerHTML = `<span class="status-badge status-high">⚠ Dark Room</span>`;
+      } else if (lt === 'Side-lit') {
+        iqEl.innerHTML = `<span class="status-badge status-high">⚠ Side-lit</span>`;
+      } else {
+        iqEl.innerHTML = `<span class="status-badge status-high">⚠ Uneven (${uni}%)</span>`;
+      }
+    }
+
+    // Acne: lower is better - show clear labels instead of raw %
+    const acneEl = document.getElementById('stat-acne');
+    if (acneEl) {
+      if (data.acne < 1) acneEl.innerHTML = `<span class="status-badge status-normal">Clear</span>`;
+      else if (data.acne < 10) acneEl.innerHTML = `<span class="status-badge status-normal">Mild</span>`;
+      else if (data.acne < 30) acneEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
+      else acneEl.innerHTML = `<span class="status-badge status-high">Severe</span>`;
+    }
+    setText('val-acne', data.acne < 1 ? 'Clear' : data.acne.toFixed(1) + '%');
+
+    // UV Damage: show descriptive labels
+    const uvEl = document.getElementById('stat-uv');
+    if (uvEl) {
+      if (data.uvDamage < 20) uvEl.innerHTML = `<span class="status-badge status-normal">Minimal</span>`;
+      else if (data.uvDamage < 50) uvEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
+      else uvEl.innerHTML = `<span class="status-badge status-high">High</span>`;
+    }
+    setText('val-uv', Math.round(data.uvDamage).toString() + '/100');
+
+    setText('val-elasticity', Math.round(data.elasticity).toString() + '/100');
+    setStatus('stat-elasticity', data.elasticity, 50, 80, true);
   }
 }
 

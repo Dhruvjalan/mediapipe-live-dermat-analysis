@@ -20,23 +20,23 @@
           <tr>
             <td>
               <div class="metric-label">
-                <span class="icon">🔴</span>
+                <span class="icon">❤️</span>
                 <div>
-                  <strong>Erythema</strong>
-                  <small>Vascular redness</small>
+                  <strong>Skin Health Score</strong>
+                  <small>Overall Assessment</small>
                 </div>
               </div>
             </td>
-            <td id="val-erythema" class="value-cell">--</td>
-            <td id="stat-erythema" class="status-cell">--</td>
+            <td id="val-health" class="value-cell">--</td>
+            <td id="stat-health" class="status-cell">--</td>
           </tr>
           <tr>
             <td>
               <div class="metric-label">
                 <span class="icon">✨</span>
                 <div>
-                  <strong>Luminance</strong>
-                  <small>Skin glow / Variance</small>
+                  <strong>Glow Score</strong>
+                  <small>Skin Luminance</small>
                 </div>
               </div>
             </td>
@@ -46,15 +46,54 @@
           <tr>
             <td>
               <div class="metric-label">
-                <span class="icon">🟤</span>
+                <span class="icon">💧</span>
                 <div>
-                  <strong>Melanin</strong>
-                  <small>Pigmentation index</small>
+                  <strong>Hydration</strong>
+                  <small>Moisture Estimate</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-hydration" class="value-cell">--</td>
+            <td id="stat-hydration" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🌞</span>
+                <div>
+                  <strong>Pigmentation</strong>
+                  <small>Melanin Index</small>
                 </div>
               </div>
             </td>
             <td id="val-melanin" class="value-cell">--</td>
             <td id="stat-melanin" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🔴</span>
+                <div>
+                  <strong>Redness</strong>
+                  <small>Vascular Erythema</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-erythema" class="value-cell">--</td>
+            <td id="stat-erythema" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🧴</span>
+                <div>
+                  <strong>Oiliness</strong>
+                  <small>Specular Glare</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-oiliness" class="value-cell">--</td>
+            <td id="stat-oiliness" class="status-cell">--</td>
           </tr>
           <tr>
             <td>
@@ -72,36 +111,36 @@
           <tr>
             <td>
               <div class="metric-label">
-                <span class="icon">🕳️</span>
+                <span class="icon">🪞</span>
                 <div>
-                  <strong>Yellowness</strong>
-                  <small>Jaundice</small>
+                  <strong>Texture Score</strong>
+                  <small>Surface Smoothness</small>
                 </div>
               </div>
             </td>
-            <td id="val-yellowness" class="value-cell">--</td>
-            <td id="stat-yellowness" class="status-cell">--</td>
+            <td id="val-texture" class="value-cell">--</td>
+            <td id="stat-texture" class="status-cell">--</td>
           </tr>
           <tr>
             <td>
               <div class="metric-label">
-                <span class="icon">🕳️</span>
+                <span class="icon">😊</span>
                 <div>
-                  <strong>Heamoglobin</strong>
-                  <small>Oxygen in Blood </small>
+                  <strong>Wrinkle Score</strong>
+                  <small>Fine Lines Density</small>
                 </div>
               </div>
             </td>
-            <td id="val-hemoglobin" class="value-cell">--</td>
-            <td id="stat-hemoglobin" class="status-cell">--</td>
+            <td id="val-wrinkles" class="value-cell">--</td>
+            <td id="stat-wrinkles" class="status-cell">--</td>
           </tr>
           <tr>
             <td>
               <div class="metric-label">
-                <span class="icon">🕳️</span>
+                <span class="icon">😴</span>
                 <div>
                   <strong>Fatigue</strong>
-                  <small>Oxygen in Blood </small>
+                  <small>Eye Aspect Ratio</small>
                 </div>
               </div>
             </td>
@@ -111,15 +150,106 @@
           <tr>
             <td>
               <div class="metric-label">
-                <span class="icon">🕳️</span>
+                <span class="icon">👁️</span>
+                <div>
+                  <strong>Dark Circle Score</strong>
+                  <small>Under-eye Pigmentation</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-dark-circles" class="value-cell">--</td>
+            <td id="stat-dark-circles" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🫀</span>
                 <div>
                   <strong>Heart Rate</strong>
-                  <small>BPM </small>
+                  <small>BPM</small>
                 </div>
               </div>
             </td>
             <td id="val-heartrate" class="value-cell">--</td>
             <td id="stat-heartrate" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🩸</span>
+                <div>
+                  <strong>Skin Perfusion</strong>
+                  <small>Vascular Estimate</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-perfusion" class="value-cell">--</td>
+            <td id="stat-perfusion" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🟡</span>
+                <div>
+                  <strong>Jaundice Risk</strong>
+                  <small>Yellowness Index</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-yellowness" class="value-cell">--</td>
+            <td id="stat-yellowness" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🔴</span>
+                <div>
+                  <strong>Acne Severity</strong>
+                  <small>Inflammation Density</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-acne" class="value-cell">--</td>
+            <td id="stat-acne" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">☀️</span>
+                <div>
+                  <strong>UV Damage Score</strong>
+                  <small>Estimated Sun Damage</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-uv" class="value-cell">--</td>
+            <td id="stat-uv" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">🧘‍♀️</span>
+                <div>
+                  <strong>Elasticity Score</strong>
+                  <small>Skin Firmness Estimate</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-elasticity" class="value-cell">--</td>
+            <td id="stat-elasticity" class="status-cell">--</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-label">
+                <span class="icon">📷</span>
+                <div>
+                  <strong>Image Quality</strong>
+                  <small>Sharpness & Glare</small>
+                </div>
+              </div>
+            </td>
+            <td id="val-image-quality" class="value-cell">--</td>
+            <td id="stat-image-quality" class="status-cell">--</td>
           </tr>
         </tbody>
       </table>

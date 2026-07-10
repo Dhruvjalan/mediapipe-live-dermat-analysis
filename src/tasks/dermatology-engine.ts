@@ -226,6 +226,79 @@ export class DermatologyEngine {
     return { brightness, sharpness, glarePct, quality_ok: qualityOk };
   }
 
+  // ── ILLUMINATION ROBUSTNESS ─────────────────────────────────────────────────
+
+  // A. Detect Lighting Condition across 3 flat face regions.
+  // Returns: avgBrightness, uniformity (0-100), lightingType, sideDelta
+  static detectLightingCondition(foreheadRoi: any, leftCheekRoi: any, rightCheekRoi: any): any {
+    const getBrightness = (roi: any): number => {
+      let gray = new cv.Mat();
+      cv.cvtColor(roi, gray, 11); // COLOR_RGBA2GRAY
+      let b = cv.mean(gray)[0];
+      gray.delete();
+      return b;
+    };
+
+    const fhBright = getBrightness(foreheadRoi);
+    const lcBright = getBrightness(leftCheekRoi);
+    const rcBright = getBrightness(rightCheekRoi);
+
+    const avgBrightness = (fhBright + lcBright + rcBright) / 3;
+    const maxDiff = Math.max(fhBright, lcBright, rcBright) - Math.min(fhBright, lcBright, rcBright);
+    // Uniformity: 0 difference = 100, 80+ difference = 0
+    const uniformity = Math.max(0, 100 - (maxDiff / 80) * 100);
+    const sideDelta = Math.abs(lcBright - rcBright);
+
+    let lightingType = 'Even';
+    if (avgBrightness > 210) lightingType = 'Overexposed';
+    else if (avgBrightness < 50) lightingType = 'Dark';
+    else if (sideDelta > 40) lightingType = 'Side-lit';
+    else if (uniformity < 50) lightingType = 'Uneven';
+
+    return { avgBrightness, uniformity, lightingType, sideDelta };
+  }
+
+  // B. Single Scale Retinex — separates skin reflectance from ambient illumination.
+  // Works per-ROI so half-lit faces are handled independently.
+  static normalizeIllumination(roiMat: any): any {
+    if (!roiMat || roiMat.empty()) return roiMat.clone();
+
+    let float32 = new cv.Mat();
+    roiMat.convertTo(float32, cv.CV_32F, 1.0 / 255.0);
+
+    let channels = new cv.MatVector();
+    cv.split(float32, channels);
+
+    const numChannels = Math.min(3, channels.size());
+    let illumMats: any[] = [];
+
+    for (let i = 0; i < numChannels; i++) {
+      let ch = channels.get(i);
+      // Add epsilon to avoid log(0)
+      ch.convertTo(ch, -1, 1.0, 1e-4);
+      cv.log(ch, ch); // ln(I + eps)
+
+      // Estimate illumination via a large Gaussian blur (the "surround" in retinex)
+      let illum = new cv.Mat();
+      cv.GaussianBlur(ch, illum, new cv.Size(31, 31), 15, 15, cv.BORDER_REPLICATE);
+
+      // Reflectance = log(I) - log(Illumination)
+      cv.subtract(ch, illum, ch);
+      illumMats.push(illum);
+    }
+
+    cv.merge(channels, float32);
+    // Normalize reflectance values back to 0-255 range
+    cv.normalize(float32, float32, 0, 255, cv.NORM_MINMAX);
+    let result = new cv.Mat();
+    float32.convertTo(result, cv.CV_8U);
+
+    float32.delete();
+    channels.delete();
+    illumMats.forEach((m) => m.delete());
+    return result;
+  }
+
   // 10. Melanin Index
   // 4. Melanin Index (Logarithmic Scale)
   static getMelaninIndex(roiMat: any): number {
@@ -380,5 +453,191 @@ export class DermatologyEngine {
     // Clamp to realistic human resting/active range (40 - 180 BPM)
     if (bpm < 40 || bpm > 180) return 0;
     return bpm;
+  }
+
+  // 15. Wrinkle Score (Canny Edge Density)
+  static getWrinkleScore(roiMat: any): number {
+    let gray = new cv.Mat();
+    cv.cvtColor(roiMat, gray, 11); // cv.COLOR_RGBA2GRAY
+
+    // Smooth to reduce noise (pores)
+    let blurred = new cv.Mat();
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+
+    let edges = new cv.Mat();
+    // Canny thresholds: 50, 150
+    cv.Canny(blurred, edges, 50, 150);
+
+    let edgeDensity = (cv.countNonZero(edges) / (edges.rows * edges.cols)) * 100.0;
+
+    gray.delete();
+    blurred.delete();
+    edges.delete();
+    return edgeDensity;
+  }
+
+  // 16. Dark Circle Score (Under-eye Luminance vs Cheek Luminance)
+  static getDarkCircleScore(underEyeRoi: any, cheekRoi: any): number {
+    let eyeGray = new cv.Mat();
+    cv.cvtColor(underEyeRoi, eyeGray, 11);
+    let eyeLum = cv.mean(eyeGray)[0];
+
+    let cheekGray = new cv.Mat();
+    cv.cvtColor(cheekRoi, cheekGray, 11);
+    let cheekLum = cv.mean(cheekGray)[0];
+
+    eyeGray.delete();
+    cheekGray.delete();
+
+    // Score based on how much darker the under-eye is compared to the cheek
+    let diff = cheekLum - eyeLum;
+    if (diff < 0) diff = 0; // If eye is brighter, no dark circles
+
+    // Map max diff of 100 to a score of 100
+    let score = (diff / 100.0) * 100.0;
+    return Math.min(Math.max(score, 0), 100);
+  }
+
+  // 17. Texture Score (0-100, where 100 is perfectly smooth)
+  static getTextureScore(roiMat: any): number {
+    // Instead of raw sharpness which depends on webcam resolution,
+    // use Pore Density (which is morphological) to estimate texture.
+    let poreDensity = this.getBlackHatPoreDensity(roiMat);
+    // Pore density usually ranges from 1% to 10%
+    let score = 100 - poreDensity * 8;
+    return Math.min(Math.max(score, 0), 100);
+  }
+
+  // 18. Hydration Score (Pseudo-heuristic combining glow and smoothness)
+  static getHydrationScore(luminance: number, textureScore: number): number {
+    // Map luminance to a 0-100 glow score. Average luminance variance is ~1000.
+    let glow = Math.min((luminance / 1500) * 100, 100);
+
+    // Combine 50% glow and 50% smoothness
+    return glow * 0.5 + textureScore * 0.5;
+  }
+
+  // 19. Overall Skin Health Score
+  static getOverallSkinHealth(metrics: any): number {
+    let score = 100;
+
+    // Penalties (Removed Melanin, as base pigmentation is not a health defect)
+    if (metrics.erythema > 130) score -= (metrics.erythema - 130) * 0.8;
+    if (metrics.yellowness > 130) score -= (metrics.yellowness - 130) * 0.8;
+
+    score -= metrics.poreDensity * 2.5;
+    score -= metrics.wrinkles * 2.0;
+
+    if (metrics.darkCircles > 5) score -= (metrics.darkCircles - 5) * 0.5;
+    if (metrics.acne > 10) score -= (metrics.acne - 10) * 0.3; // Acne penalty
+    if (metrics.uvDamage > 20) score -= (metrics.uvDamage - 20) * 0.2; // Sun damage penalty
+
+    // Ensure score doesn't drop below 0 before applying bonuses
+    score = Math.max(score, 0);
+
+    // Hydration acts as a strong scaler for overall health
+    score = score * 0.6 + (metrics.hydration || 50) * 0.4;
+
+    return Math.min(Math.max(score, 0), 100);
+  }
+
+  // 20. Image Quality Score
+  static getImageQualityScore(quality: any): number {
+    let score = 100;
+
+    // Brightness 60-220 is good
+    if (quality.brightness < 60) score -= 60 - quality.brightness;
+    if (quality.brightness > 220) score -= quality.brightness - 220;
+
+    // Sharpness > 50 is good
+    if (quality.sharpness < 50) score -= 50 - quality.sharpness;
+
+    // Glare < 15 is good
+    if (quality.glarePct > 15) score -= (quality.glarePct - 15) * 2;
+
+    return Math.min(Math.max(score, 0), 100);
+  }
+
+  // 21. Acne Severity (Blob detection on Erythema)
+  static getAcneSeverity(roiMat: any): number {
+    let rgb = new cv.Mat();
+    cv.cvtColor(roiMat, rgb, 1); // COLOR_RGBA2RGB
+
+    let lab = new cv.Mat();
+    cv.cvtColor(rgb, lab, 45); // COLOR_RGB2Lab
+
+    let channels = new cv.MatVector();
+    cv.split(lab, channels);
+    let aChannel = channels.get(1); // Erythema channel
+
+    // Threshold the a-channel to find highly inflamed spots
+    let redMask = new cv.Mat();
+    cv.threshold(aChannel, redMask, 145, 255, cv.THRESH_BINARY);
+
+    // Filter out tiny noise (like pores) using morphological opening
+    let kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+    let opened = new cv.Mat();
+    cv.morphologyEx(redMask, opened, cv.MORPH_OPEN, kernel);
+
+    let acnePixels = cv.countNonZero(opened);
+    let totalPixels = opened.rows * opened.cols;
+    let acneDensity = (acnePixels / totalPixels) * 100.0;
+
+    // Scale density so 0-5% maps to a 0-100 severity score
+    let severity = Math.min((acneDensity / 5.0) * 100.0, 100.0);
+
+    rgb.delete();
+    lab.delete();
+    channels.delete();
+    aChannel.delete();
+    redMask.delete();
+    kernel.delete();
+    opened.delete();
+
+    return severity;
+  }
+
+  // 22. UV Damage Score (Melanin Variance + Wrinkles)
+  static getUVDamageScore(roiMat: any, wrinkleScore: number): number {
+    let rgb = new cv.Mat();
+    cv.cvtColor(roiMat, rgb, 1); // COLOR_RGBA2RGB
+
+    let lab = new cv.Mat();
+    cv.cvtColor(rgb, lab, 45); // COLOR_RGB2Lab
+
+    let channels = new cv.MatVector();
+    cv.split(lab, channels);
+    let lChannel = channels.get(0); // Luminance
+
+    let mean = new cv.Mat();
+    let stddev = new cv.Mat();
+    cv.meanStdDev(lChannel, mean, stddev);
+    let luminanceVariance = stddev.data64F[0];
+
+    let pigmentationUnevenness = Math.min((Math.max(luminanceVariance - 10, 0) / 20.0) * 100, 100);
+    let uvScore = pigmentationUnevenness * 0.7 + Math.min(wrinkleScore * 20, 100) * 0.3;
+
+    rgb.delete();
+    lab.delete();
+    channels.delete();
+    lChannel.delete();
+    mean.delete();
+    stddev.delete();
+
+    return Math.min(Math.max(uvScore, 0), 100);
+  }
+
+  // 23. Elasticity Score (Firmness)
+  static getElasticityScore(textureScore: number, wrinkleScore: number, fatigueEAR: number): number {
+    let elasticity = textureScore;
+    let wrinklePenalty = Math.min(wrinkleScore * 10, 40);
+    elasticity -= wrinklePenalty;
+
+    // Penalty for drooping eyes (sagging skin)
+    if (fatigueEAR < 0.25) {
+      elasticity -= (0.25 - fatigueEAR) * 100;
+    }
+
+    return Math.min(Math.max(elasticity, 0), 100);
   }
 }

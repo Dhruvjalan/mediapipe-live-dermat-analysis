@@ -30,6 +30,7 @@ import { setupImageEmbedder, cleanupImageEmbedder } from './tasks/image-embedder
 import { setupInteractiveSegmenter, cleanupInteractiveSegmenter } from './tasks/interactive-segmenter';
 import { setupHolisticLandmarker, cleanupHolisticLandmarker } from './tasks/holistic-landmarker';
 import { setupImageClassifier, cleanupImageClassifier } from './tasks/image-classifier';
+import { setupHealthChat, cleanupHealthChat } from './tasks/health-chat';
 
 import { renderSidebar } from './ui/sidebar';
 import { renderMobileNav } from './ui/mobile-nav';
@@ -126,6 +127,7 @@ export function initApp() {
       label: 'Language Detector',
     },
     '/text/text_embedder': { setup: setupTextEmbedder, cleanup: cleanupTextEmbedder, label: 'Text Embedder' },
+    '/health/health_chat': { setup: setupHealthChat, cleanup: cleanupHealthChat, label: 'Health Chat' },
   };
 
   let currentCleanup: (() => void) | undefined;

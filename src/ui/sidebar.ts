@@ -50,6 +50,11 @@ export function renderSidebar(container: HTMLElement) {
         <li><a href="#/text/text_classifier" class="nav-button" data-task="text-classifier">Text Classifier</a></li>
         <li><a href="#/text/text_embedder" class="nav-button" data-task="text-embedder">Text Embedder</a></li>
       </ul>
+
+      <div class="category-header">Health</div>
+      <ul>
+        <li><a href="#/health/health_chat" class="nav-button" data-task="health-chat">🩺 Health Chat</a></li>
+      </ul>
     </nav>
   `;
 }

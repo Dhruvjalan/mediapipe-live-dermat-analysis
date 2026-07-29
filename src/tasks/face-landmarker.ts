@@ -83,6 +83,39 @@ class FaceLandmarkerTask extends BaseVisionTask {
     if (this.modelSelector) {
       this.modelSelector.updateOptions([{ label: 'Face Landmarker', value: 'face_landmarker', isDefault: true }]);
     }
+
+    // Setup "Get Health Report" button
+    const reportBtn = document.getElementById('get-report-btn');
+    if (reportBtn) {
+      reportBtn.addEventListener('click', () => {
+        if (this.latestResults) {
+          // Snapshot current metrics to sessionStorage
+          const metricsForChat = {
+            health: this.latestResults.health,
+            glow: this.latestResults.glow,
+            hydration: this.latestResults.hydration,
+            melanin: this.latestResults.melanin,
+            erythema: this.latestResults.erythema,
+            oiliness: this.latestResults.oiliness,
+            pores: this.latestResults.pores,
+            texture: this.latestResults.texture,
+            wrinkles: this.latestResults.wrinkles,
+            fatigue: this.latestResults.fatigue,
+            darkCircles: this.latestResults.darkCircles,
+            heartRate: this.latestResults.heartRate,
+            perfusion: this.latestResults.perfusion,
+            yellowness: this.latestResults.yellowness,
+            imageQuality: this.latestResults.imageQuality,
+            acne: this.latestResults.acne,
+            uvDamage: this.latestResults.uvDamage,
+            elasticity: this.latestResults.elasticity,
+          };
+          sessionStorage.setItem('ayurgenx-skin-metrics', JSON.stringify(metricsForChat));
+        }
+        // Navigate to Health Chat
+        window.location.hash = '#/health/health_chat';
+      });
+    }
   }
 
   private triggerRedetection() {
@@ -195,6 +228,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
   private timeBuffer: number[] = [];
   private lastHeartRate: number = 0;
   private readonly BUFFER_WINDOW_MS = 5000; // 5-second sampling window
+  private latestResults: any = null;
 
   private async runDermatologyAnalysis(landmarks: any[]) {
     if (this.isProcessing) return;
@@ -354,6 +388,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
         elasticity: elasticity,
         lighting: lighting,
       };
+      this.latestResults = results;
       this.updateDermUI(results);
       // }
     } catch (error: any) {

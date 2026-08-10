@@ -343,16 +343,199 @@
     </div>
 
     <div class="viewport">
+      <div
+        class="face-scan-container"
+        style="
+          position: relative;
+          width: 100%;
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+        "
+      >
+        <!-- Video / Canvas Feed Container -->
+        <div
+          class="video-preview-wrapper"
+          style="
+            position: relative;
+            width: 640px;
+            height: 480px;
+            border-radius: 16px;
+            overflow: hidden;
+            background: #000;
+          "
+        >
+          <video
+            id="webcam"
+            autoplay
+            playsinline
+            style="width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1)"
+          ></video>
+          <canvas
+            id="output-canvas"
+            style="
+              position: absolute;
+              top: 0;
+              left: 0;
+              width: 100%;
+              height: 100%;
+              pointer-events: none;
+              transform: scaleX(-1);
+            "
+          ></canvas>
+
+          <!-- Apple FaceID Style Circular Frame Guide Overlay -->
+          <div
+            class="face-id-guide-ring"
+            style="
+              position: absolute;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              width: 240px;
+              height: 320px;
+              border: 3px dashed rgba(255, 255, 255, 0.4);
+              border-radius: 50%/40%;
+              pointer-events: none;
+              transition: border-color 0.3s ease;
+            "
+          ></div>
+
+          <!-- Live Instruction Banner Inside Screen -->
+          <div
+            id="scan-instruction-banner"
+            style="
+              position: absolute;
+              bottom: 24px;
+              left: 50%;
+              transform: translateX(-50%);
+              background: rgba(0, 0, 0, 0.75);
+              backdrop-filter: blur(8px);
+              color: #fff;
+              padding: 10px 20px;
+              border-radius: 30px;
+              font-size: 15px;
+              font-weight: 500;
+              text-align: center;
+              z-index: 10;
+              border: 1px solid rgba(255, 255, 255, 0.15);
+              box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            "
+          >
+            Click "Start Multi-Angle Scan" to begin
+          </div>
+        </div>
+
+        <!-- Angle Progress Markers (Turn Green when captured) -->
+        <div id="angle-markers-bar" style="display: flex; gap: 10px; margin-top: 16px; align-items: center">
+          <div
+            id="marker-CENTER"
+            class="angle-pill"
+            style="
+              padding: 6px 12px;
+              background: #333;
+              color: #aaa;
+              border-radius: 20px;
+              font-size: 13px;
+              font-weight: 600;
+              transition: all 0.3s;
+            "
+          >
+            Center
+          </div>
+          <div
+            id="marker-RIGHT"
+            class="angle-pill"
+            style="
+              padding: 6px 12px;
+              background: #333;
+              color: #aaa;
+              border-radius: 20px;
+              font-size: 13px;
+              font-weight: 600;
+              transition: all 0.3s;
+            "
+          >
+            Right ➡️
+          </div>
+          <div
+            id="marker-LEFT"
+            class="angle-pill"
+            style="
+              padding: 6px 12px;
+              background: #333;
+              color: #aaa;
+              border-radius: 20px;
+              font-size: 13px;
+              font-weight: 600;
+              transition: all 0.3s;
+            "
+          >
+            ⬅️ Left
+          </div>
+          <div
+            id="marker-UP"
+            class="angle-pill"
+            style="
+              padding: 6px 12px;
+              background: #333;
+              color: #aaa;
+              border-radius: 20px;
+              font-size: 13px;
+              font-weight: 600;
+              transition: all 0.3s;
+            "
+          >
+            Up ⬆️
+          </div>
+          <div
+            id="marker-DOWN"
+            class="angle-pill"
+            style="
+              padding: 6px 12px;
+              background: #333;
+              color: #aaa;
+              border-radius: 20px;
+              font-size: 13px;
+              font-weight: 600;
+              transition: all 0.3s;
+            "
+          >
+            Down ⬇️
+          </div>
+        </div>
+
+        <!-- Trigger Button -->
+        <button
+          id="start-sequence-scan-btn"
+          style="
+            margin-top: 14px;
+            background: #0071e3;
+            color: #fff;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 20px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 14px rgba(0, 113, 227, 0.4);
+          "
+        >
+          Start Multi-Angle Scan
+        </button>
+      </div>
       <!-- Webcam View -->
       <div id="view-webcam" class="view-content">
         <div class="cam-container">
           <div class="video-wrapper">
-            <div class="webcam-placeholder" id="webcam-placeholder">
+            <!-- <div class="webcam-placeholder" id="webcam-placeholder">
               <span class="material-icons">videocam_off</span>
               <p>Webcam Disabled</p>
-            </div>
-            <video id="webcam" autoplay playsinline muted></video>
-            <canvas id="output_canvas"></canvas>
+            </div> -->
+            <!-- <video id="webcam" autoplay playsinline muted></video> -->
+            <!-- <canvas id="output_canvas"></canvas> -->
           </div>
         </div>
         <div

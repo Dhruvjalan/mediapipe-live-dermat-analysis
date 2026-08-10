@@ -1,9 +1,22 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/mediapipe-samples-web/',
+  base: '/',
 
-  plugins: [],
+  plugins: [
+    {
+      name: 'disable-mediapipe-sourcemap',
+      enforce: 'pre',
+      transform(code, id) {
+        if (id.includes('@mediapipe/tasks-vision')) {
+          return {
+            code: code.replace(/\/\/# sourceMappingURL=.*/g, ''),
+            map: null
+          };
+        }
+      }
+    }
+  ],
   optimizeDeps: {
     exclude: [
       '@mediapipe/tasks-vision',
@@ -13,6 +26,9 @@ export default defineConfig({
   },
   worker: {
     format: 'es'
+  },
+  build: {
+    sourcemap: false,
   },
   server: {
     port: 5174,

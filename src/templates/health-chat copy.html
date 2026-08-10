@@ -1,0 +1,75 @@
+<div class="health-chat-container">
+  <!-- Metrics Summary Bar -->
+  <div class="chat-metrics-bar" id="chat-metrics-bar">
+    <div class="chat-metrics-header">
+      <div class="chat-metrics-title">
+        <span class="material-icons" style="color: var(--primary); font-size: 20px">analytics</span>
+        <span>Your Skin Scan Results</span>
+      </div>
+      <button class="chat-metrics-toggle" id="metrics-toggle-btn">
+        <span class="material-icons">expand_more</span>
+      </button>
+    </div>
+    <div class="chat-metrics-grid" id="chat-metrics-grid">
+      <div class="chat-metric-pill">
+        <span class="pill-icon">❤️</span>
+        <span class="pill-label">Health</span>
+        <span class="pill-value" id="chat-m-health">--</span>
+      </div>
+      <div class="chat-metric-pill">
+        <span class="pill-icon">✨</span>
+        <span class="pill-label">Glow</span>
+        <span class="pill-value" id="chat-m-glow">--</span>
+      </div>
+      <div class="chat-metric-pill">
+        <span class="pill-icon">💧</span>
+        <span class="pill-label">Hydration</span>
+        <span class="pill-value" id="chat-m-hydration">--</span>
+      </div>
+      <div class="chat-metric-pill">
+        <span class="pill-icon">🧴</span>
+        <span class="pill-label">Oiliness</span>
+        <span class="pill-value" id="chat-m-oiliness">--</span>
+      </div>
+      <div class="chat-metric-pill">
+        <span class="pill-icon">🪞</span>
+        <span class="pill-label">Texture</span>
+        <span class="pill-value" id="chat-m-texture">--</span>
+      </div>
+      <div class="chat-metric-pill">
+        <span class="pill-icon">🧘</span>
+        <span class="pill-label">Elasticity</span>
+        <span class="pill-value" id="chat-m-elasticity">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Area -->
+  <div class="chat-messages-area" id="chat-messages">
+    <!-- Welcome message injected by JS -->
+  </div>
+
+  <!-- Option Cards Container -->
+  <div class="chat-options-container" id="chat-options">
+    <!-- Dynamically rendered option cards -->
+  </div>
+
+  <!-- Report Container (hidden until generated) -->
+  <div class="chat-report-container" id="chat-report" style="display: none">
+    <!-- Report rendered here -->
+  </div>
+
+  <!-- Input Bar -->
+  <div class="chat-input-bar" id="chat-input-bar">
+    <div class="chat-input-wrapper">
+      <input type="text" id="chat-input" class="chat-input" placeholder="Type your answer..." autocomplete="off" />
+      <button class="chat-send-btn" id="chat-send-btn">
+        <span class="material-icons">send</span>
+      </button>
+    </div>
+    <div class="chat-input-hint">
+      <span id="chat-question-counter">Question 1 of ~6</span>
+      <span class="chat-powered-by">Powered by Groq + Llama 3.3</span>
+    </div>
+  </div>
+</div>

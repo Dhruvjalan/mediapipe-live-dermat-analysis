@@ -20,6 +20,10 @@ import { setupHealthChat, cleanupHealthChat } from './tasks/health-chat';
 
 import { renderSidebar } from './ui/sidebar';
 import { renderMobileNav } from './ui/mobile-nav';
+import landingTemplate from './templates/landing.html?raw';
+import loginTemplate from './templates/login.html?raw';
+import registerTemplate from './templates/register.html?raw';
+import dashboardTemplate from './templates/dashboard.html?raw';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -60,46 +64,144 @@ export function initApp() {
 
   const mainContent = app.querySelector('.main-content') as HTMLElement;
 
-  // 4. Router Setup
+  // Define your expanded routes map
   const routes = {
-    '/face_landmarker': { setup: setupFaceLandmarker, cleanup: cleanupFaceLandmarker, label: 'Face Landmarker' },
-    '/health_chat': { setup: setupHealthChat, cleanup: cleanupHealthChat, label: 'Health Chat' },
+    '/landing': {
+      template: landingTemplate,
+      label: 'Welcome',
+      setup: async (container: HTMLElement) => {
+        container.innerHTML = landingTemplate;
+        // Attach any landing page specific event listeners here if needed
+      },
+      cleanup: () => {},
+    },
+    '/login': {
+      template: loginTemplate,
+      label: 'Sign In',
+      setup: async (container: HTMLElement) => {
+        container.innerHTML = loginTemplate;
+
+        // Wire up your login form handler
+        const form = container.querySelector('#login-form');
+        form?.addEventListener('submit', (e) => {
+          e.preventDefault();
+          window.location.hash = '#/dashboard';
+        });
+      },
+      cleanup: () => {},
+    },
+    '/register': {
+      template: registerTemplate,
+      label: 'Register',
+      setup: async (container: HTMLElement) => {
+        container.innerHTML = registerTemplate;
+
+        // Wire up registration form handler
+        const form = container.querySelector('#register-form');
+        form?.addEventListener('submit', (e) => {
+          e.preventDefault();
+          window.location.hash = '#/dashboard';
+        });
+      },
+      cleanup: () => {},
+    },
+    '/dashboard': {
+      template: dashboardTemplate,
+      label: 'Customer Dashboard',
+      setup: async (container: HTMLElement) => {
+        container.innerHTML = dashboardTemplate;
+
+        // Populate dynamic data (e.g., historical scans from localStorage)
+        try {
+          const history = JSON.parse(localStorage.getItem('ayurgenx_scan_history') || '[]');
+          if (history.length > 0) {
+            const tbody = container.querySelector('#history-rows');
+            if (tbody) {
+              tbody.innerHTML = '';
+              history.forEach((scan: any) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                <td>${scan.id}</td>
+                <td><strong>${scan.health}%</strong></td>
+                <td>${scan.hydration}%</td>
+                <td>${scan.erythema}%</td>
+                <td><span style="color:#34c759; font-weight:600;">Recorded</span></td>
+              `;
+                tbody.appendChild(tr);
+              });
+            }
+          }
+        } catch (e) {}
+      },
+      cleanup: () => {},
+    },
+    // Keep your existing MediaPipe tasks if needed
+    '/face-landmarker': { setup: setupFaceLandmarker, cleanup: cleanupFaceLandmarker, label: 'Face Landmarker' },
+    '/health-chat': { setup: setupHealthChat, cleanup: cleanupHealthChat, label: 'Health Chat' },
   };
 
   let currentCleanup: (() => void) | undefined;
 
+  // async function router() {
+  //   let hash = window.location.hash.slice(1);
+
+  //   // Handle root or invalid routes by defaulting to object detector
+  //   if (!hash || !routes[hash as keyof typeof routes]) {
+  //     hash = '/face_landmarker';
+  //     window.location.hash = hash;
+  //   }
+
+  //   const route = routes[hash as keyof typeof routes];
+
+  //   // Cleanup previous task
+  //   if (currentCleanup) {
+  //     currentCleanup();
+  //     currentCleanup = undefined;
+  //   }
+
+  //   // Clear main content area only
+  //   mainContent.innerHTML = '';
+
+  //   // Setup new task
+  //   if (route) {
+  //     await route.setup(mainContent);
+  //     currentCleanup = route.cleanup;
+  //     document.title = `${route.label} - MediaPipe Web Task Demo`;
+
+  //     // Update active state in sidebar
+  //     const links = sidebar.querySelectorAll('a');
+  //     links.forEach((l) => {
+  //       if (l.getAttribute('href') === `#${hash}`) l.classList.add('active');
+  //       else l.classList.remove('active');
+  //     });
+  //   }
+  // }
+
   async function router() {
     let hash = window.location.hash.slice(1);
 
-    // Handle root or invalid routes by defaulting to object detector
+    // Default to landing page if hash is empty or invalid
     if (!hash || !routes[hash as keyof typeof routes]) {
-      hash = '/face_landmarker';
+      hash = '/landing';
       window.location.hash = hash;
     }
 
     const route = routes[hash as keyof typeof routes];
 
-    // Cleanup previous task
+    // Cleanup previous task/view
     if (currentCleanup) {
       currentCleanup();
       currentCleanup = undefined;
     }
 
-    // Clear main content area only
+    // Clear main content area
     mainContent.innerHTML = '';
 
-    // Setup new task
-    if (route) {
+    // Setup new template/task view
+    if (route && typeof route.setup === 'function') {
       await route.setup(mainContent);
       currentCleanup = route.cleanup;
-      document.title = `${route.label} - MediaPipe Web Task Demo`;
-
-      // Update active state in sidebar
-      const links = sidebar.querySelectorAll('a');
-      links.forEach((l) => {
-        if (l.getAttribute('href') === `#${hash}`) l.classList.add('active');
-        else l.classList.remove('active');
-      });
+      document.title = `${route.label} - AyurGenX`;
     }
   }
 

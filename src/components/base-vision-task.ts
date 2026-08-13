@@ -60,7 +60,7 @@ export abstract class BaseVisionTask extends BaseTask {
         const { mode, result, inferenceTime } = event.data;
         this.updateStatus(`Done in ${Math.round(inferenceTime)}ms`);
         this.updateInferenceTime(inferenceTime);
-        console.log('Image detection result:', result);
+        // console.log('Image detection result:', result);
         if (mode === 'IMAGE') {
           this.displayImageResult(result);
         } else if (mode === 'VIDEO') {

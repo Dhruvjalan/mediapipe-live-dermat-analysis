@@ -41,6 +41,8 @@ interface ScoredFrame {
   timestamp: number;
 }
 
+const MIN_EPOCH = 50;
+
 class FaceLandmarkerTask extends BaseVisionTask {
   private drawingUtils: DrawingUtils | undefined;
 
@@ -52,6 +54,8 @@ class FaceLandmarkerTask extends BaseVisionTask {
   // ── Multi-Angle Sequence Capture & Scoring Buffers ──
   private currentStage: ScanStage = 'IDLE';
   private stageFramesCount: number = 0;
+  private scanRestartAttempts = 0;
+  private epoch: number = 0; // Incremented each time a new scan is completed
 
   // Stores categorized/scored frames per pose stage for ranking & filtering
   private stageFrameBuckets: Record<string, ScoredFrame[]> = {
@@ -230,6 +234,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
   }
 
   private checkPoseAndAdvanceSequence(landmarks: any[]) {
+    console.log('in checkPoseAndAdvanceSequence');
     if (this.currentStage === 'IDLE' || this.currentStage === 'COMPLETED') return;
 
     const nose = landmarks[1];
@@ -242,21 +247,29 @@ class FaceLandmarkerTask extends BaseVisionTask {
     const verticalDelta = nose.y - eyeMidY;
 
     let poseMatched = false;
-
+    console.log('Before switch');
+    console.log(
+      `Current Stage: ${this.currentStage}, Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`
+    );
     switch (this.currentStage) {
       case 'CENTER':
+        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (noseOffset >= 0.1 && noseOffset <= 0.9 && Math.abs(verticalDelta) < 0.1) poseMatched = true;
         break;
       case 'RIGHT':
+        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (noseOffset < 0.4) poseMatched = true;
         break;
       case 'LEFT':
+        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (noseOffset > 0.6) poseMatched = true;
         break;
       case 'UP':
+        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (verticalDelta < 0.03) poseMatched = true;
         break;
       case 'DOWN':
+        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (verticalDelta > 0.1) poseMatched = true;
         break;
     }
@@ -297,10 +310,11 @@ class FaceLandmarkerTask extends BaseVisionTask {
     console.log(`Scan Evaluation - Total Good Frames Found: ${totalGoodFramesAcrossScan}`);
 
     // Rule 1: If good frames for any/all orientations are critically low (<= 4), restart the whole process
-    if (totalGoodFramesAcrossScan <= SCAN_CONFIG.MIN_GOOD_FRAMES_RESTART) {
+    if (totalGoodFramesAcrossScan <= SCAN_CONFIG.MIN_GOOD_FRAMES_RESTART && this.scanRestartAttempts < 1) {
       console.warn('Too many substandard frames detected. Restarting full sequence scan.');
       this.updateInstructionBanner('⚠️ Low lighting or erratic motion detected. **Restarting Scan...**');
       setTimeout(() => this.startSequenceScan(), 2000);
+      this.scanRestartAttempts++;
       return;
     }
 
@@ -357,9 +371,11 @@ class FaceLandmarkerTask extends BaseVisionTask {
     }
 
     this.latestResults = smoothedStabilizedResults;
-    this.updateDermUI(smoothedStabilizedResults);
-    this.updateInstructionBanner('✅ Comprehensive Skin Health Analysis Complete!');
-    console.log('IRTS Smoothed Physics Engine Results:', smoothedStabilizedResults);
+    if (this.epoch <= MIN_EPOCH) {
+      this.updateDermUI(smoothedStabilizedResults);
+      this.updateInstructionBanner('✅ Comprehensive Skin Health Analysis Complete!');
+      console.log('IRTS Smoothed Physics Engine Results:', smoothedStabilizedResults);
+    }
   }
 
   private triggerRedetection() {
@@ -407,6 +423,21 @@ class FaceLandmarkerTask extends BaseVisionTask {
   }
 
   protected override displayVideoResult(result: FaceLandmarkerResult) {
+    console.log('in displayVideoResult');
+
+    if (!this.canvasElement) {
+      this.canvasElement = document.getElementById('output_canvas') as HTMLCanvasElement;
+    }
+    if (!this.canvasCtx && this.canvasElement) {
+      this.canvasCtx = this.canvasElement.getContext('2d')!;
+    }
+    console.log(
+      'in displayVideoResult !this.canvasElement || !this.canvasCtx = ',
+      !this.canvasElement || !this.canvasCtx
+    );
+
+    if (!this.canvasElement || !this.canvasCtx) return;
+    console.log('Canvas Element and Context initialized');
     this.canvasElement.width = this.video.videoWidth;
     this.canvasElement.height = this.video.videoHeight;
     this.canvasCtx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
@@ -421,7 +452,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
 
       for (const landmarks of result.faceLandmarks) {
         this.drawLandmarks(this.drawingUtils, landmarks);
-
+        console.log('Current Stage:', this.currentStage, 'Landmarks:', landmarks);
         if (this.currentStage !== 'IDLE' && this.currentStage !== 'COMPLETED') {
           this.checkPoseAndAdvanceSequence(landmarks);
         }
@@ -632,7 +663,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
       }
 
       this.latestResults = results;
-      this.updateDermUI(results);
+      // this.updateDermUI(results);
     } catch (error: any) {
       console.error('Error in dermatology frame analysis:', error);
     } finally {
@@ -686,6 +717,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
   }
 
   private updateDermUI(data: any) {
+    this.epoch++;
     const setText = (id: string, text: string) => {
       const el = document.getElementById(id);
       if (el) el.innerText = text;

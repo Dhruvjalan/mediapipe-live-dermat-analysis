@@ -17,6 +17,7 @@
 import { FaceLandmarkerResult, DrawingUtils, FaceLandmarker } from '@mediapipe/tasks-vision';
 import { BaseVisionTask } from '../components/base-vision-task';
 import { DermatologyEngine } from '../tasks/dermatology-engine';
+import { detectLocation, getCachedLocation } from '../services/location-service';
 
 // @ts-ignore
 import template from '../templates/face-landmarker.html?raw';
@@ -70,6 +71,9 @@ class FaceLandmarkerTask extends BaseVisionTask {
 
   protected override onInitializeUI() {
     console.log('Initializing FaceLandmarkerTask UI with Ranked Temporal Sequence Capture & Physics Engine');
+
+    // ── Location Detection ──
+    this.initLocationDetection();
 
     const startScanBtn = document.getElementById('start-sequence-scan-btn');
     if (startScanBtn) {
@@ -125,7 +129,9 @@ class FaceLandmarkerTask extends BaseVisionTask {
 
     const reportBtn = document.getElementById('get-report-btn');
     if (reportBtn) {
-      reportBtn.addEventListener('click', () => {
+      reportBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         if (this.latestResults) {
           const metricsForChat = {
             health: this.latestResults.health,
@@ -151,6 +157,46 @@ class FaceLandmarkerTask extends BaseVisionTask {
         }
         window.location.hash = '#/health/health_chat';
       });
+    }
+  }
+
+  /**
+   * Detect user's geographic location and update the dashboard badge.
+   */
+  private async initLocationDetection(): Promise<void> {
+    const textEl = document.getElementById('location-text');
+    const dotEl = document.getElementById('location-dot');
+    const badgeEl = document.getElementById('location-badge');
+
+    if (!textEl) return;
+
+    try {
+      const loc = await detectLocation();
+      if (loc) {
+        textEl.textContent = loc.displayName;
+        if (dotEl) {
+          dotEl.style.background = '#4caf50';
+          dotEl.style.animation = 'none';
+        }
+        if (badgeEl) {
+          badgeEl.style.background = 'linear-gradient(135deg, #e8f5e9, #f1f8e9)';
+          badgeEl.style.borderColor = '#a5d6a7';
+        }
+        // Store for health-chat to pick up
+        sessionStorage.setItem('ayurgenx-location', JSON.stringify(loc));
+      } else {
+        textEl.textContent = 'Location unavailable';
+        if (dotEl) {
+          dotEl.style.background = '#bdbdbd';
+          dotEl.style.animation = 'none';
+        }
+      }
+    } catch {
+      textEl.textContent = 'Location unavailable';
+      if (dotEl) {
+        dotEl.style.background = '#bdbdbd';
+        dotEl.style.animation = 'none';
+      }
     }
   }
 
@@ -312,7 +358,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
     // Rule 1: If good frames for any/all orientations are critically low (<= 4), restart the whole process
     if (totalGoodFramesAcrossScan <= SCAN_CONFIG.MIN_GOOD_FRAMES_RESTART && this.scanRestartAttempts < 1) {
       console.warn('Too many substandard frames detected. Restarting full sequence scan.');
-      this.updateInstructionBanner('⚠️ Low lighting or erratic motion detected. **Restarting Scan...**');
+      this.updateInstructionBanner('Low lighting or erratic motion detected. **Restarting Scan...**');
       setTimeout(() => this.startSequenceScan(), 2000);
       this.scanRestartAttempts++;
       return;
@@ -337,7 +383,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
    * and Iterative Robust Temporal Smoothing (IRTS).
    */
   private runPhysicsInformedDeepLearningEngine(topFrames: ScoredFrame[], attentionScale: number) {
-    this.updateInstructionBanner('🔬 Running Physics Deep Learning & IRTS Smoothing...');
+    this.updateInstructionBanner('Running Physics Deep Learning & IRTS Smoothing...');
 
     if (topFrames.length === 0) return;
 
@@ -373,7 +419,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
     this.latestResults = smoothedStabilizedResults;
     if (this.epoch <= MIN_EPOCH) {
       this.updateDermUI(smoothedStabilizedResults);
-      this.updateInstructionBanner('✅ Comprehensive Skin Health Analysis Complete!');
+      this.updateInstructionBanner('Comprehensive Skin Health Analysis Complete!');
       console.log('IRTS Smoothed Physics Engine Results:', smoothedStabilizedResults);
     }
   }

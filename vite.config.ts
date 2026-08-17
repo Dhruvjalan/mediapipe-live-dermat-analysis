@@ -5,10 +5,10 @@ export default defineConfig({
 
   plugins: [
     {
-      name: 'disable-mediapipe-sourcemap',
+      name: 'disable-node-modules-sourcemap',
       enforce: 'pre',
       transform(code, id) {
-        if (id.includes('@mediapipe/tasks-vision')) {
+        if (id.includes('node_modules')) {
           return {
             code: code.replace(/\/\/# sourceMappingURL=.*/g, ''),
             map: null

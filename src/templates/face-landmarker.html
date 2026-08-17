@@ -8,6 +8,43 @@
         <span class="live-indicator"><span class="dot"></span> Live</span>
       </div>
 
+      <!-- Location Detection Badge -->
+      <div
+        id="location-badge"
+        style="
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 14px;
+          margin: 0 0 10px 0;
+          background: linear-gradient(135deg, #e8f5e9, #f1f8e9);
+          border: 1px solid #c8e6c9;
+          border-radius: 10px;
+          font-size: 13px;
+          color: #2e7d32;
+          transition: all 0.3s ease;
+        "
+      >
+        <span style="font-size: 16px">📍</span>
+        <span id="location-text" style="flex: 1; font-weight: 500">Detecting location...</span>
+        <span
+          id="location-dot"
+          style="width: 8px; height: 8px; border-radius: 50%; background: #ff9800; animation: locPulse 1.2s infinite"
+        ></span>
+      </div>
+      <style>
+        @keyframes locPulse {
+          0%,
+          100% {
+            opacity: 1;
+            transform: scale(1);
+          }
+          50% {
+            opacity: 0.4;
+            transform: scale(0.7);
+          }
+        }
+      </style>
       <table class="derm-table">
         <thead>
           <tr>
@@ -254,7 +291,7 @@
         </tbody>
       </table>
 
-      <button class="get-report-btn" id="get-report-btn">
+      <button type="button" class="get-report-btn" id="get-report-btn">
         <span class="btn-icon">🩺</span>
         <span class="btn-text">Get AI Health Report</span>
         <span class="material-icons btn-arrow">arrow_forward</span>

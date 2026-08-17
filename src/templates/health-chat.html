@@ -4,39 +4,47 @@
     <div class="chat-metrics-header">
       <div class="chat-metrics-title">
         <span class="material-icons" style="color: var(--primary); font-size: 20px">analytics</span>
-        <span>Your Skin Scan Results</span>[cite: 2]
+        <span>Your Skin Scan Results</span>
       </div>
       <button class="chat-metrics-toggle" id="metrics-toggle-btn" aria-label="Toggle Metrics Summary">
-        <span class="material-icons">expand_more</span>[cite: 2]
+        <span class="material-icons">expand_more</span>
       </button>
     </div>
     <div class="chat-metrics-grid" id="chat-metrics-grid">
       <div class="chat-metric-pill">
         <span class="pill-icon">❤️</span>
-        <span class="pill-label">Health</span>[cite: 2] <span class="pill-value" id="chat-m-health">--</span>[cite: 2]
+        <span class="pill-label">Health</span> <span class="pill-value" id="chat-m-health">--</span>
       </div>
       <div class="chat-metric-pill">
         <span class="pill-icon">✨</span>
-        <span class="pill-label">Glow</span>[cite: 2] <span class="pill-value" id="chat-m-glow">--</span>[cite: 2]
+        <span class="pill-label">Glow</span> <span class="pill-value" id="chat-m-glow">--</span>
       </div>
       <div class="chat-metric-pill">
         <span class="pill-icon">💧</span>
-        <span class="pill-label">Hydration</span>[cite: 2]
-        <span class="pill-value" id="chat-m-hydration">--</span>[cite: 2]
+        <span class="pill-label">Hydration</span>
+        <span class="pill-value" id="chat-m-hydration">--</span>
       </div>
       <div class="chat-metric-pill">
         <span class="pill-icon">🧴</span>
-        <span class="pill-label">Oiliness</span>[cite: 2] <span class="pill-value" id="chat-m-oiliness">--</span>[cite:
-        2]
+        <span class="pill-label">Oiliness</span> <span class="pill-value" id="chat-m-oiliness">--</span>
       </div>
       <div class="chat-metric-pill">
         <span class="pill-icon">🪞</span>
-        <span class="pill-label">Texture</span>[cite: 2] <span class="pill-value" id="chat-m-texture">--</span>[cite: 2]
+        <span class="pill-label">Texture</span> <span class="pill-value" id="chat-m-texture">--</span>
       </div>
       <div class="chat-metric-pill">
         <span class="pill-icon">🧘</span>
-        <span class="pill-label">Elasticity</span>[cite: 2]
-        <span class="pill-value" id="chat-m-elasticity">--</span>[cite: 2]
+        <span class="pill-label">Elasticity</span>
+        <span class="pill-value" id="chat-m-elasticity">--</span>
+      </div>
+      <div
+        class="chat-metric-pill"
+        id="chat-location-pill"
+        style="background: rgba(46, 125, 50, 0.08); border-color: rgba(76, 175, 80, 0.3)"
+      >
+        <span class="pill-icon">📍</span>
+        <span class="pill-label">Location</span>
+        <span class="pill-value" id="chat-m-location" style="color: #2e7d32; font-weight: 600">Detecting...</span>
       </div>
     </div>
   </div>
@@ -56,6 +64,31 @@
     <!-- Comprehensive generated markdown/HTML AI Report rendered here -->
   </div>
 
+  <!-- Voice Recording Screen Center Banner Overlay (hidden by default) -->
+  <div class="voice-recording-overlay" id="voice-recording-banner" style="display: none">
+    <div class="voice-recording-card">
+      <div class="voice-mic-outer">
+        <div class="voice-pulse-ring"></div>
+        <button type="button" class="voice-mic-button" id="voice-banner-mic-btn" aria-label="Stop Recording">
+          <span class="material-icons voice-mic-icon">mic</span>
+        </button>
+      </div>
+
+      <div class="voice-status-block">
+        <span class="voice-recording-label" id="voice-banner-label">Listening...</span>
+        <span class="voice-recording-hint" id="voice-banner-hint">Speak your answer now. Tap icon to stop.</span>
+      </div>
+
+      <div class="voice-recording-wave" id="voice-banner-wave">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+
+      <button type="button" class="voice-stop-action-btn" id="voice-banner-stop-btn">
+        <span class="material-icons">stop</span> Done & Transcribe
+      </button>
+    </div>
+  </div>
+
   <!-- Input Bar -->
   <div class="chat-input-bar" id="chat-input-bar">
     <div class="chat-input-wrapper">
@@ -65,14 +98,23 @@
         class="chat-input"
         placeholder="Type your answer or ask the AI dermatologist..."
         autocomplete="off"
-      />[cite: 2]
+      />
+      <button
+        type="button"
+        class="chat-voice-btn"
+        id="chat-voice-btn"
+        aria-label="Voice Input"
+        title="Speak your answer with Whisper AI"
+      >
+        <span class="material-icons">mic</span>
+      </button>
       <button class="chat-send-btn" id="chat-send-btn" aria-label="Send Message">
-        <span class="material-icons">send</span>[cite: 2]
+        <span class="material-icons">send</span>
       </button>
     </div>
     <div class="chat-input-hint">
-      <span id="chat-question-counter">Question 1 of ~6</span>[cite: 2]
-      <span class="chat-powered-by">Powered by Groq + Llama 3.3</span>[cite: 2]
+      <span id="chat-question-counter">Question 1 of ~6</span>
+      <span class="chat-powered-by">Powered by Groq + Whisper AI</span>
     </div>
   </div>
 </div>

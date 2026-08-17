@@ -5,6 +5,8 @@
 
 import { GroqService, type SkinMetrics, type OptionCard } from '../services/groq-service';
 import { renderReport } from '../services/report-generator';
+import { transcribeAudioClientSide, preloadLocalWhisper } from '../services/local-whisper-service';
+import { detectLocation, getCachedLocation } from '../services/location-service';
 
 // @ts-ignore
 import template from '../templates/health-chat.html?raw';
@@ -16,15 +18,22 @@ let skinMetrics: SkinMetrics | null = null;
 let isWaitingForResponse = false;
 let questionCount = 0;
 
-// ── DOM References ───────────────────────────────────────────────────────────
+// ── DOM & Speech References ──────────────────────────────────────────────────
 
 let messagesArea: HTMLElement;
 let optionsContainer: HTMLElement;
 let chatInput: HTMLInputElement;
 let sendBtn: HTMLElement;
+let micBtn: HTMLElement;
 let questionCounter: HTMLElement;
 let inputBar: HTMLElement;
 let reportContainer: HTMLElement;
+
+let mediaRecorder: MediaRecorder | null = null;
+let audioChunks: Blob[] = [];
+let mediaStream: MediaStream | null = null;
+let recognition: any = null;
+let isRecording = false;
 
 // ── Setup / Cleanup ──────────────────────────────────────────────────────────
 
@@ -42,9 +51,14 @@ export async function setupHealthChat(container: HTMLElement) {
   optionsContainer = document.getElementById('chat-options')!;
   chatInput = document.getElementById('chat-input') as HTMLInputElement;
   sendBtn = document.getElementById('chat-send-btn')!;
+  micBtn = (document.getElementById('chat-voice-btn') || document.getElementById('chat-mic-btn'))!;
   questionCounter = document.getElementById('chat-question-counter')!;
   inputBar = document.getElementById('chat-input-bar')!;
   reportContainer = document.getElementById('chat-report')!;
+
+  // Setup Voice Input & Preload Local Whisper AI
+  setupSpeechRecognition();
+  preloadLocalWhisper();
 
   // Load metrics from sessionStorage
   const stored = sessionStorage.getItem('ayurgenx-skin-metrics');
@@ -108,6 +122,15 @@ export async function setupHealthChat(container: HTMLElement) {
 }
 
 export function cleanupHealthChat() {
+  if (isRecording) {
+    stopRecordingAndTranscribe();
+  }
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+  mediaRecorder = null;
+  recognition = null;
   skinMetrics = null;
   questionCount = 0;
   isWaitingForResponse = false;
@@ -127,6 +150,24 @@ function populateMetricsBar(m: SkinMetrics) {
   set('chat-m-oiliness', `${m.oiliness.toFixed(1)}%`);
   set('chat-m-texture', `${m.texture.toFixed(0)}/100`);
   set('chat-m-elasticity', `${m.elasticity.toFixed(0)}/100`);
+
+  // Populate Location Pill
+  const locEl = document.getElementById('chat-m-location');
+  const storedLoc = sessionStorage.getItem('ayurgenx-location');
+  if (storedLoc) {
+    try {
+      const loc = JSON.parse(storedLoc);
+      if (locEl) locEl.textContent = loc.city ? `${loc.city}, ${loc.country || ''}` : loc.displayName;
+    } catch {}
+  } else {
+    detectLocation().then((loc) => {
+      if (loc && locEl) {
+        locEl.textContent = loc.city ? `${loc.city}, ${loc.country || ''}` : loc.displayName;
+      } else if (locEl) {
+        locEl.textContent = 'Auto (Global)';
+      }
+    });
+  }
 }
 
 // ── Chat Messages ────────────────────────────────────────────────────────────
@@ -167,7 +208,6 @@ function addAIMessage(text: string, animate: boolean = true): HTMLElement {
   const contentEl = msg.querySelector('.chat-bubble-content')!;
 
   if (animate) {
-    // Typewriter effect
     typewriterEffect(contentEl as HTMLElement, text);
   } else {
     contentEl.innerHTML = formatMessageText(text);
@@ -248,7 +288,6 @@ function renderOptionCards(options: OptionCard[]) {
     optionsContainer.appendChild(card);
   });
 
-  // Animate in
   requestAnimationFrame(() => {
     optionsContainer.querySelectorAll('.chat-option-card').forEach((card, i) => {
       setTimeout(() => {
@@ -269,9 +308,283 @@ async function selectOption(opt: OptionCard) {
   await sendToLLM(opt.value);
 }
 
+// ── Voice Banner Overlay Helpers ─────────────────────────────────────────────
+
+function showVoiceBanner(
+  title: string = 'Recording in progress...',
+  subtitle: string = 'Click anywhere on this card to stop & convert to text'
+) {
+  const banner = document.getElementById('voice-recording-banner');
+  const bannerTitle = document.getElementById('voice-banner-title');
+  const bannerSubtitle = document.getElementById('voice-banner-subtitle');
+
+  if (bannerTitle) bannerTitle.textContent = title;
+  if (bannerSubtitle) bannerSubtitle.textContent = subtitle;
+  if (banner) banner.style.display = 'flex';
+}
+
+function hideVoiceBanner() {
+  const banner = document.getElementById('voice-recording-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+// ── Speech Recording & Groq Whisper AI ───────────────────────────────────────
+
+function setupSpeechRecognition() {
+  if (!micBtn) return;
+  micBtn.setAttribute('title', 'Voice Input (Click to speak)');
+  micBtn.addEventListener('click', toggleVoiceInput);
+
+  const bannerCard = document.getElementById('voice-banner-card');
+  const stopBtn = document.getElementById('voice-banner-stop-btn');
+
+  if (bannerCard) {
+    bannerCard.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isRecording) {
+        stopRecordingAndTranscribe();
+      }
+    });
+  }
+
+  if (stopBtn) {
+    stopBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isRecording) {
+        stopRecordingAndTranscribe();
+      }
+    });
+  }
+}
+
+async function toggleVoiceInput() {
+  if (isWaitingForResponse) return;
+
+  if (isRecording) {
+    stopRecordingAndTranscribe();
+  } else {
+    await startVoiceRecording();
+  }
+}
+
+async function startVoiceRecording() {
+  if (isRecording) return;
+
+  // Primary method: Direct Local Audio Capture + Groq Whisper AI
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+      audioChunks = [];
+
+      const mimeType =
+        ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find((type) =>
+          MediaRecorder.isTypeSupported(type)
+        ) || '';
+
+      mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunks.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        if (mediaStream) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          mediaStream = null;
+        }
+
+        if (audioChunks.length === 0) {
+          resetMicButton();
+          return;
+        }
+
+        const audioBlob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
+        audioChunks = [];
+
+        // UI Transcribing state inside banner
+        showVoiceBanner('⚡ Transcribing voice...', 'Converting speech to text...');
+
+        if (micBtn) {
+          micBtn.classList.remove('listening');
+          micBtn.classList.add('transcribing');
+          micBtn.setAttribute('title', 'Transcribing...');
+        }
+        if (chatInput) {
+          chatInput.placeholder = 'Transcribing...';
+        }
+
+        try {
+          let transcribedText = '';
+
+          // 1. Try lightning-fast Groq Whisper API (< 0.2s speed)
+          if (groqService && groqService.isConfigured()) {
+            try {
+              transcribedText = await groqService.transcribeAudio(audioBlob);
+            } catch (groqErr) {
+              console.warn('Groq Whisper API error, using local fallback:', groqErr);
+            }
+          }
+
+          // 2. Fallback to local client-side model if Groq is unavailable
+          if (!transcribedText || !transcribedText.trim()) {
+            transcribedText = await transcribeAudioClientSide(audioBlob);
+          }
+
+          let cleanText = (transcribedText || '').trim();
+          // Filter out Whisper silent hallucinations (e.g. '.', '..', '...', 'Thank you.', etc.)
+          if (
+            /^[\s.\-?!,;:]*$/.test(cleanText) ||
+            cleanText.toLowerCase() === 'thank you' ||
+            cleanText.toLowerCase() === 'thanks for watching'
+          ) {
+            cleanText = '';
+          }
+
+          if (cleanText) {
+            chatInput.value = cleanText;
+            chatInput.focus();
+          } else {
+            addSystemMessage('🎙️ Low audio or no clear speech detected. Please speak louder into your mic.');
+          }
+        } catch (err: any) {
+          console.error('Transcription error:', err);
+          addSystemMessage(`🎙️ Transcription error: ${err.message || 'Failed to process audio'}`);
+        } finally {
+          resetMicButton();
+        }
+      };
+
+      // Start recording with 100ms timeslice to ensure continuous data accumulation
+      mediaRecorder.start(100);
+      isRecording = true;
+
+      // Show Voice Recording Center Banner Overlay
+      showVoiceBanner('Recording in progress...', 'Click anywhere on this card to stop & convert to text');
+
+      if (micBtn) {
+        micBtn.classList.add('listening');
+        micBtn.setAttribute('title', 'Recording... Click mic again when finished speaking');
+      }
+      if (chatInput) {
+        chatInput.placeholder = 'Listening...';
+      }
+      return;
+    } catch (err: any) {
+      console.warn('getUserMedia microphone access error:', err);
+      hideVoiceBanner();
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        addSystemMessage(
+          '🎙️ Microphone permission was denied. Please allow microphone access in your browser settings.'
+        );
+        return;
+      }
+    }
+  }
+
+  // Secondary fallback: Web Speech API
+  startWebSpeechFallback();
+}
+
+function stopRecordingAndTranscribe() {
+  if (isRecording) {
+    showVoiceBanner('⚡ Transcribing voice...', 'Converting speech to text...');
+  }
+
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    isRecording = false;
+    mediaRecorder.stop();
+  } else if (recognition) {
+    stopWebSpeech();
+  }
+}
+
+function resetMicButton() {
+  isRecording = false;
+  hideVoiceBanner();
+  if (micBtn) {
+    micBtn.classList.remove('listening', 'transcribing');
+    micBtn.setAttribute('title', 'Voice Input (Click to speak)');
+  }
+  if (chatInput) {
+    chatInput.placeholder = 'Type your answer...';
+  }
+}
+
+// ── Web Speech API Fallback ──────────────────────────────────────────────────
+
+function startWebSpeechFallback() {
+  const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    addSystemMessage('🎙️ Audio recording is not supported in this browser.');
+    return;
+  }
+
+  try {
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      isRecording = true;
+      if (micBtn) micBtn.classList.add('listening');
+      if (chatInput) chatInput.placeholder = 'Listening... Speak your answer now...';
+    };
+
+    recognition.onresult = (event: any) => {
+      let currentTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        currentTranscript += event.results[i][0].transcript;
+      }
+      if (currentTranscript.trim()) {
+        chatInput.value = currentTranscript;
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.warn('Web Speech error:', event.error);
+      stopWebSpeech();
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        addSystemMessage(`🎙️ Microphone error (${event.error}). Please check permissions.`);
+      }
+    };
+
+    recognition.onend = () => {
+      stopWebSpeech();
+    };
+
+    recognition.start();
+  } catch (err) {
+    console.error('Failed Web Speech fallback:', err);
+  }
+}
+
+function stopWebSpeech() {
+  isRecording = false;
+  if (recognition) {
+    try {
+      recognition.stop();
+    } catch {}
+  }
+  resetMicButton();
+}
+
 // ── Input Handling ───────────────────────────────────────────────────────────
 
 async function handleSend() {
+  if (isRecording) {
+    stopRecordingAndTranscribe();
+  }
   const text = chatInput.value.trim();
   if (!text || isWaitingForResponse) return;
 
@@ -283,11 +596,14 @@ async function handleSend() {
 function disableInput() {
   chatInput.disabled = true;
   sendBtn.classList.add('disabled');
+  if (micBtn) micBtn.classList.add('disabled');
+  if (isRecording) stopRecordingAndTranscribe();
 }
 
 function enableInput() {
   chatInput.disabled = false;
   sendBtn.classList.remove('disabled');
+  if (micBtn) micBtn.classList.remove('disabled');
   chatInput.focus();
 }
 

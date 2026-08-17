@@ -3,6 +3,8 @@
  * OpenAI-compatible API.  No SDK needed, just fetch + SSE parsing.
  */
 
+import { getCachedLocation } from './location-service';
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ChatMessage {
@@ -46,9 +48,29 @@ export interface SkinMetrics {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const MODEL = 'llama-3.3-70b-versatile';
+const CANDIDATE_MODELS = [
+  'groq/compound-mini',
+  'groq/compound',
+  'openai/gpt-oss-120b',
+  'qwen/qwen3.6-27b',
+  'llama-3.1-8b-instant',
+  'llama3-70b-8192',
+  'mixtral-8x7b-32768',
+];
 
 // ── System Prompt Builder ────────────────────────────────────────────────────
+
+function _buildLocationBlock(): string {
+  const loc = getCachedLocation();
+  if (!loc) return 'USER LOCATION: Not detected\n';
+
+  return `USER LOCATION (auto-detected):
+• City: ${loc.city}${loc.state ? ', ' + loc.state : ''}
+• Country: ${loc.country}
+• Coordinates: ${loc.latitude.toFixed(4)}°N, ${loc.longitude.toFixed(4)}°E
+Use this location to tailor advice (local climate, water quality, UV exposure, regional diet, available botanicals).
+`;
+}
 
 function buildSystemPrompt(metrics: SkinMetrics): string {
   // Interpret key flags the LLM should branch on
@@ -89,6 +111,7 @@ REAL-TIME SKIN SCAN DATA (from the user's webcam analysis):
 • Elasticity: ${metrics.elasticity.toFixed(0)}/100
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+${_buildLocationBlock()}
 FLAGGED CONCERNS: ${flags.length > 0 ? flags.join(', ') : 'NONE — skin looks healthy!'}
 
 YOUR TASK:
@@ -124,6 +147,7 @@ The report message should be a comprehensive health report in markdown with thes
 # 🔬 Skin Analysis Breakdown
 # 🧬 Lifestyle Assessment
 # ⚠️ Risk Factors Identified
+# 🌍 Location-Based Insights (if location detected — climate, UV, water quality, local botanicals)
 # 🌿 Ayurvedic Recommendations
 # 💊 Modern Health Tips
 # 📋 Personalized Daily Routine
@@ -147,7 +171,40 @@ export class GroqService {
     return this.apiKey.length > 0 && this.apiKey !== 'your_groq_api_key_here';
   }
 
+  /**
+   * Transcribe recorded audio using Groq Whisper API endpoint.
+   */
+  async transcribeAudio(audioBlob: Blob): Promise<string> {
+    if (!this.isConfigured()) {
+      throw new Error('Groq API key not configured');
+    }
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'audio.webm');
+    formData.append('model', 'whisper-large-v3-turbo');
+
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Groq Whisper API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.text || '';
+  }
+
+  private mockMetrics: SkinMetrics | null = null;
+  private mockStep: number = 0;
+
   initConversation(metrics: SkinMetrics): void {
+    this.mockMetrics = metrics;
+    this.mockStep = 0;
     this.systemPrompt = buildSystemPrompt(metrics);
     this.conversationHistory = [{ role: 'system', content: this.systemPrompt }];
   }
@@ -169,24 +226,59 @@ export class GroqService {
       });
     }
 
-    const response = await fetch(GROQ_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: this.conversationHistory,
-        temperature: 0.7,
-        max_tokens: 4096,
-        stream: true,
-      }),
-    });
+    if (!this.isConfigured()) {
+      return this.generateMockStepResponse(userMessage, onChunk);
+    }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Groq API error (${response.status}): ${errorText}`);
+    let response: Response | null = null;
+    let lastErrorText = '';
+
+    for (const modelCandidate of CANDIDATE_MODELS) {
+      try {
+        const res = await fetch(GROQ_API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: modelCandidate,
+            messages: this.conversationHistory,
+            temperature: 0.7,
+            max_tokens: 4096,
+            stream: true,
+          }),
+        });
+
+        if (res.ok) {
+          response = res;
+          break;
+        }
+
+        const errText = await res.text();
+        lastErrorText = errText;
+        const isDecommissioned =
+          res.status === 404 ||
+          res.status === 400 ||
+          errText.includes('model_not_found') ||
+          errText.includes('model_decommissioned') ||
+          errText.includes('does not exist') ||
+          errText.includes('no longer supported');
+
+        if (isDecommissioned) {
+          console.warn(`Groq model '${modelCandidate}' unavailable (${res.status}), trying fallback model...`);
+          continue;
+        } else {
+          throw new Error(`Groq API error (${res.status}): ${errText}`);
+        }
+      } catch (err: any) {
+        if (err.message && err.message.includes('Groq API error')) throw err;
+        lastErrorText = err.message || String(err);
+      }
+    }
+
+    if (!response || !response.ok) {
+      throw new Error(`Groq API error: ${lastErrorText || 'All candidate models failed'}`);
     }
 
     // ── Stream SSE ───────────────────────────────────────────────────────────
@@ -227,6 +319,133 @@ export class GroqService {
 
     // Parse the structured response
     return this.parseResponse(accumulated);
+  }
+
+  private async generateMockStepResponse(userMessage: string, onChunk?: (chunk: string) => void): Promise<LLMQuestion> {
+    const m: SkinMetrics = this.mockMetrics || {
+      health: 75,
+      glow: 70,
+      hydration: 60,
+      melanin: 18,
+      erythema: 25,
+      oiliness: 12,
+      pores: 8,
+      texture: 65,
+      wrinkles: 2,
+      fatigue: 0.3,
+      darkCircles: 15,
+      heartRate: 72,
+      perfusion: 70,
+      yellowness: 120,
+      imageQuality: 85,
+      acne: 5,
+      uvDamage: 20,
+      elasticity: 75,
+    };
+
+    if (userMessage.toLowerCase().includes('report') || userMessage === 'generate_report' || this.mockStep >= 4) {
+      const reportMarkdown = `
+# 🏥 Overall Health Summary
+Based on your biometric skin scan, your overall **Skin Health Score is ${m.health.toFixed(0)}/100**. Your skin exhibits moderate physiological equilibrium with localized telemetry markers indicating areas for targeted hydration and barrier restoration.
+
+# 🔬 Skin Analysis Breakdown
+- **Hydration Level**: ${m.hydration.toFixed(0)}/100 ${m.hydration < 50 ? '⚠️ (Needs attention)' : '✅ (Optimal)'}
+- **Melanin & Pigmentation Index**: ${m.melanin.toFixed(1)}
+- **Redness / Erythema Index**: ${m.erythema.toFixed(1)} ${m.erythema > 100 ? '⚠️ (Elevated vascular sensitivity)' : '✅ (Normal)'}
+- **Specular Glare / Oiliness**: ${m.oiliness.toFixed(1)}%
+- **Texture & Elasticity**: ${m.texture.toFixed(0)}/100
+
+# 🧬 Lifestyle Assessment
+Your responses indicate consistent activity patterns. Restoring optimal hydration and improving restorative sleep cycles will directly accelerate dermal barrier recovery.
+
+# ⚠️ Risk Factors Identified
+- Micro-vascular reactivity under stress or environmental changes.
+- Trans-epidermal water loss during extended screen time or dry air exposure.
+
+# 🌿 Ayurvedic Recommendations (Dosha Alignment)
+- **Pitta Balancing**: Incorporate cooling botanicals such as Aloe Vera, Rosewater, and Gotu Kola.
+- **Vata Support**: Warm sesame oil abhyanga massage prior to baths to lock in lipid moisture.
+
+# 💊 Modern Health Tips
+- Apply a hyaluronic acid-based serum on damp skin twice daily.
+- Use a broad-spectrum SPF 50+ mineral sunscreen to shield against UV and blue light exposure.
+
+# 📋 Personalized Daily Routine
+- **Morning**: Gentle cleanser → Vitamin C / Antioxidant serum → Barrier cream → SPF 50+.
+- **Evening**: Double cleanse → Niacinamide serum → Hydrating night moisturizer.
+
+# 🎯 Priority Actions — Top 3 This Week
+1. Increase water intake to at least 2.5 Liters daily.
+2. Maintain consistent 7-8 hours of nighttime rest.
+3. Apply cooling topical moisturizer following multi-angle camera scans.
+`;
+
+      if (onChunk) {
+        for (let i = 0; i < reportMarkdown.length; i += 20) {
+          onChunk(reportMarkdown.slice(i, i + 20));
+          await new Promise((r) => setTimeout(r, 15));
+        }
+      }
+
+      this.conversationHistory.push({ role: 'assistant', content: reportMarkdown });
+      return { message: reportMarkdown, isReport: true };
+    }
+
+    let result: LLMQuestion;
+
+    if (this.mockStep === 0) {
+      result = {
+        message: `Hello! I'm **Dr. AyurGenX** 🌿. I've reviewed your dermal scan results (Overall Skin Health: **${m.health.toFixed(0)}/100**). To help me generate a tailored health report, how much water do you drink daily?`,
+        options: [
+          { emoji: '💧', label: 'Under 1.5 Liters', value: 'low_water' },
+          { emoji: '🥛', label: '1.5 - 2.5 Liters', value: 'moderate_water' },
+          { emoji: '🚰', label: '2.5+ Liters (Hydro Homie)', value: 'high_water' },
+        ],
+      };
+    } else if (this.mockStep === 1) {
+      result = {
+        message: `Got it! Water intake directly impacts cellular turgor and hydration metrics. How many hours of restful sleep do you average per night?`,
+        options: [
+          { emoji: '😴', label: 'Under 6 hours', value: 'low_sleep' },
+          { emoji: '🌙', label: '6 - 7.5 hours', value: 'normal_sleep' },
+          { emoji: '🛌', label: '8+ hours', value: 'optimal_sleep' },
+        ],
+      };
+    } else if (this.mockStep === 2) {
+      result = {
+        message: `Sleep quality is crucial for collagen synthesis and reducing under-eye dark circles. How would you describe your typical diet?`,
+        options: [
+          { emoji: '🥗', label: 'Fresh, balanced & whole foods', value: 'clean_diet' },
+          { emoji: '🍕', label: 'Mixed with occasional fast food', value: 'mixed_diet' },
+          { emoji: '🌶️', label: 'High spice, processed, or sugary', value: 'spicy_diet' },
+        ],
+      };
+    } else if (this.mockStep === 3) {
+      result = {
+        message: `Diet plays a big role in skin sebum levels and inflammation! What is your typical daily stress level?`,
+        options: [
+          { emoji: '🧘', label: 'Low & well managed', value: 'low_stress' },
+          { emoji: '💼', label: 'Moderate work stress', value: 'moderate_stress' },
+          { emoji: '🔥', label: 'High stress / heavy schedule', value: 'high_stress' },
+        ],
+      };
+    } else {
+      result = {
+        message: `Thank you! I have synthesized your skin telemetry data and lifestyle profile. Ready to generate your personalized health report?`,
+        options: [
+          { emoji: '📋', label: 'Yes, generate my report!', value: 'generate_report' },
+          { emoji: '💬', label: 'I have more details to add', value: 'more_info' },
+        ],
+      };
+    }
+
+    this.mockStep++;
+    if (onChunk) {
+      onChunk(result.message);
+    }
+
+    this.conversationHistory.push({ role: 'assistant', content: JSON.stringify(result) });
+    return result;
   }
 
   /**

@@ -644,11 +644,23 @@ async function sendToLLM(userInput: string) {
   isWaitingForResponse = true;
   disableInput();
   clearOptionCards();
+
+  const isExplicitReportRequest =
+    userInput === 'generate_report' ||
+    userInput.toLowerCase().includes('generate my report') ||
+    userInput.toLowerCase().includes('generate report') ||
+    (questionCount >= 6 && userInput.toLowerCase().trim() === 'yes');
+
+  if (isExplicitReportRequest) {
+    showVoiceBanner('✨ Synthesizing Health Report...', 'Analyzing telemetry metrics & generating Ayurvedic plan...');
+  }
   addTypingIndicator();
 
   try {
-    const response = await groqService.chat(userInput);
+    const response = isExplicitReportRequest ? await groqService.generateReport() : await groqService.chat(userInput);
+
     removeTypingIndicator();
+    hideVoiceBanner();
     questionCount++;
     updateQuestionCounter();
 
@@ -671,25 +683,25 @@ async function sendToLLM(userInput: string) {
 
       reportContainer.scrollTop = 0;
     } else {
-      addAIMessage(response.message);
+      const msgText =
+        (response.message || '').trim() ||
+        "I've collected your scan details and lifestyle answers. Ready to see your comprehensive health report?";
+      addAIMessage(msgText);
 
       if (response.options && response.options.length > 0) {
         setTimeout(
           () => {
             renderOptionCards(response.options!);
           },
-          Math.min(response.message.length * 15, 1500)
+          Math.min(msgText.length * 15, 1200)
         );
-      }
-
-      // Check if the LLM is asking if user is ready for report
-      const isReadyPrompt =
-        response.message.toLowerCase().includes('ready to generate') ||
-        response.message.toLowerCase().includes('generate your report') ||
-        response.message.toLowerCase().includes('ready for your report');
-
-      if (isReadyPrompt && (!response.options || response.options.length === 0)) {
-        // Add "Generate Report" button
+      } else if (
+        questionCount >= 6 ||
+        msgText.toLowerCase().includes('ready') ||
+        msgText.toLowerCase().includes('report') ||
+        msgText.toLowerCase().includes('synthesized')
+      ) {
+        // Automatically provide Generate Report CTA button
         setTimeout(
           () => {
             renderOptionCards([
@@ -697,12 +709,13 @@ async function sendToLLM(userInput: string) {
               { emoji: '💬', label: 'I have more to share', value: 'more_info' },
             ]);
           },
-          Math.min(response.message.length * 15, 1500)
+          Math.min(msgText.length * 15, 1000)
         );
       }
     }
   } catch (err: any) {
     removeTypingIndicator();
+    hideVoiceBanner();
     addSystemMessage(`❌ Error: ${err.message}`);
   } finally {
     isWaitingForResponse = false;

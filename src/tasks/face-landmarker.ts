@@ -18,6 +18,13 @@ import { FaceLandmarkerResult, DrawingUtils, FaceLandmarker } from '@mediapipe/t
 import { BaseVisionTask } from '../components/base-vision-task';
 import { DermatologyEngine } from '../tasks/dermatology-engine';
 import { detectLocation, getCachedLocation } from '../services/location-service';
+import {
+  detectClimateFromLocation,
+  getVariableMetricsForZone,
+  type ClimateZone,
+  type VariableMetricMeta,
+  VARIABLE_METRIC_REGISTRY,
+} from '../services/climate-zone-service';
 
 // @ts-ignore
 import template from '../templates/face-landmarker.html?raw';
@@ -51,6 +58,11 @@ class FaceLandmarkerTask extends BaseVisionTask {
   private minFaceDetectionConfidence = 0.5;
   private minFacePresenceConfidence = 0.5;
   private minTrackingConfidence = 0.5;
+
+  // ── Climate Zone State ──
+  private currentClimateZone: ClimateZone = 'UNKNOWN';
+  private activeVariableMetrics: VariableMetricMeta[] = [];
+  private variableMetricsRendered = false;
 
   // ── Multi-Angle Sequence Capture & Scoring Buffers ──
   private currentStage: ScanStage = 'IDLE';
@@ -152,6 +164,7 @@ class FaceLandmarkerTask extends BaseVisionTask {
             acne: this.latestResults.acne,
             uvDamage: this.latestResults.uvDamage,
             elasticity: this.latestResults.elasticity,
+            climateZone: this.currentClimateZone,
           };
           sessionStorage.setItem('ayurgenx-skin-metrics', JSON.stringify(metricsForChat));
         }
@@ -167,6 +180,9 @@ class FaceLandmarkerTask extends BaseVisionTask {
     const textEl = document.getElementById('location-text');
     const dotEl = document.getElementById('location-dot');
     const badgeEl = document.getElementById('location-badge');
+
+    // Render default variable metrics (all) until location is known
+    this.renderVariableMetrics('UNKNOWN');
 
     if (!textEl) return;
 
@@ -184,12 +200,22 @@ class FaceLandmarkerTask extends BaseVisionTask {
         }
         // Store for health-chat to pick up
         sessionStorage.setItem('ayurgenx-location', JSON.stringify(loc));
+
+        // Determine climate zone from detected state
+        const stateStr = loc.state || loc.city || '';
+        const { zone, info, metrics } = detectClimateFromLocation(stateStr);
+        this.currentClimateZone = zone;
+        this.renderVariableMetrics(zone);
+        this.updateClimateZoneUI(zone, info);
       } else {
         textEl.textContent = 'Location unavailable';
         if (dotEl) {
           dotEl.style.background = '#bdbdbd';
           dotEl.style.animation = 'none';
         }
+        // Fallback: show all variable metrics
+        this.renderVariableMetrics('UNKNOWN');
+        this.updateClimateZoneUI('UNKNOWN', null);
       }
     } catch {
       textEl.textContent = 'Location unavailable';
@@ -197,6 +223,71 @@ class FaceLandmarkerTask extends BaseVisionTask {
         dotEl.style.background = '#bdbdbd';
         dotEl.style.animation = 'none';
       }
+      this.renderVariableMetrics('UNKNOWN');
+      this.updateClimateZoneUI('UNKNOWN', null);
+    }
+  }
+
+  /**
+   * Render the variable metric table rows based on the detected climate zone.
+   * If zone is UNKNOWN, all variable metrics are shown.
+   */
+  private renderVariableMetrics(zone: ClimateZone) {
+    const tbody = document.getElementById('variable-metrics-tbody');
+    if (!tbody) return;
+
+    this.activeVariableMetrics = getVariableMetricsForZone(zone);
+    tbody.innerHTML = '';
+
+    for (const metric of this.activeVariableMetrics) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>
+          <div class="metric-label">
+            <span class="icon">${metric.icon}</span>
+            <div>
+              <strong>${metric.label}</strong>
+              <small>${metric.subtitle}</small>
+            </div>
+          </div>
+        </td>
+        <td id="${metric.valId}" class="value-cell">--</td>
+        <td id="${metric.statId}" class="status-cell">--</td>
+      `;
+      tbody.appendChild(tr);
+    }
+    this.variableMetricsRendered = true;
+  }
+
+  /**
+   * Update climate zone badge and Ayurvedic focus area in the UI.
+   */
+  private updateClimateZoneUI(zone: ClimateZone, info: any) {
+    const subtitleEl = document.getElementById('climate-zone-subtitle');
+    const badgeEl = document.getElementById('climate-zone-badge');
+    const emojiEl = document.getElementById('climate-zone-emoji');
+    const nameEl = document.getElementById('climate-zone-name');
+    const descEl = document.getElementById('climate-zone-desc');
+    const ayurBadge = document.getElementById('ayurvedic-focus-badge');
+    const ayurText = document.getElementById('ayurvedic-focus-text');
+
+    if (zone === 'UNKNOWN' || !info) {
+      if (subtitleEl) subtitleEl.textContent = 'All metrics shown (location not in India)';
+      if (badgeEl) badgeEl.style.display = 'none';
+      if (ayurBadge) ayurBadge.style.display = 'none';
+      return;
+    }
+
+    if (subtitleEl) subtitleEl.textContent = `${info.label} Zone`;
+    if (badgeEl) {
+      badgeEl.style.display = 'flex';
+      if (emojiEl) emojiEl.textContent = info.emoji;
+      if (nameEl) nameEl.textContent = info.label;
+      if (descEl) descEl.textContent = info.description;
+    }
+    if (ayurBadge && ayurText) {
+      ayurBadge.style.display = 'flex';
+      ayurText.textContent = info.ayurvedicFocus;
     }
   }
 
@@ -792,45 +883,13 @@ class FaceLandmarkerTask extends BaseVisionTask {
       }
     };
 
+    // ═══ FIXED METRICS (Universal Baseline) ═══
+
+    // Skin Health Score
     setText('val-health', Math.round(data.health).toString() + '/100');
     setStatus('stat-health', data.health, 50, 80, true);
 
-    setText('val-luminance', Math.round(data.glow).toString() + '/100');
-    setStatus('stat-luminance', data.glow, 40, 70, true);
-
-    setText('val-hydration', Math.round(data.hydration).toString() + '/100');
-    setStatus('stat-hydration', data.hydration, 40, 70, true);
-
-    setText('val-melanin', data.melanin.toFixed(2));
-    setStatus('stat-melanin', data.melanin, 5, 25);
-
-    setText('val-erythema', data.erythema.toFixed(1));
-    setStatus('stat-erythema', data.erythema, 90, 150);
-
-    setText('val-oiliness', data.oiliness.toFixed(1) + '%');
-    setStatus('stat-oiliness', data.oiliness, 5, 15);
-
-    setText('val-pores', data.pores.toFixed(1) + '%');
-    setStatus('stat-pores', data.pores, 2, 10);
-
-    setText('val-texture', Math.round(data.texture).toString() + '/100');
-    setStatus('stat-texture', data.texture, 40, 75, true);
-
-    setText('val-wrinkles', data.wrinkles.toFixed(1) + '%');
-    setStatus('stat-wrinkles', data.wrinkles, 1, 5);
-
-    setText('val-fatigue', data.fatigue.toFixed(3));
-    const fatigueEl = document.getElementById('stat-fatigue');
-    if (fatigueEl) {
-      fatigueEl.innerHTML =
-        data.fatigue < 0.2
-          ? `<span class="status-badge status-high">Fatigued</span>`
-          : `<span class="status-badge status-normal">Awake</span>`;
-    }
-
-    setText('val-dark-circles', Math.round(data.darkCircles).toString() + '%');
-    setStatus('stat-dark-circles', data.darkCircles, 10, 30);
-
+    // Heart Rate
     if (data.heartRate === 0) {
       setText('val-heartrate', 'Calibrating...');
       const statEl = document.getElementById('stat-heartrate');
@@ -840,13 +899,103 @@ class FaceLandmarkerTask extends BaseVisionTask {
       setStatus('stat-heartrate', data.heartRate, 60, 100);
     }
 
+    // Skin Perfusion
     setText('val-perfusion', Math.round(data.perfusion).toString() + '/100');
     setStatus('stat-perfusion', data.perfusion, 40, 80, true);
 
+    // Wrinkle Score
+    setText('val-wrinkles', data.wrinkles.toFixed(1) + '%');
+    setStatus('stat-wrinkles', data.wrinkles, 1, 5);
+
+    // Dark Circles
+    setText('val-dark-circles', Math.round(data.darkCircles).toString() + '%');
+    setStatus('stat-dark-circles', data.darkCircles, 10, 30);
+
+    // Fatigue
+    setText('val-fatigue', data.fatigue.toFixed(3));
+    const fatigueEl = document.getElementById('stat-fatigue');
+    if (fatigueEl) {
+      fatigueEl.innerHTML =
+        data.fatigue < 0.2
+          ? `<span class="status-badge status-high">Fatigued</span>`
+          : `<span class="status-badge status-normal">Awake</span>`;
+    }
+
+    // Jaundice Risk
     setText('val-yellowness', data.yellowness.toFixed(1));
     setStatus('stat-yellowness', data.yellowness, 110, 140);
 
-    setText('val-image-quality', Math.round(data.imageQuality).toString() + '/100');
+    // ═══ VARIABLE METRICS (Climate-Adapted) ═══
+    // These are dynamically rendered based on the detected climate zone.
+    // We update whichever variable metric elements exist in the DOM.
+
+    this.updateVariableMetric(data, 'oiliness', () => {
+      setText('val-oiliness', data.oiliness.toFixed(1) + '%');
+      setStatus('stat-oiliness', data.oiliness, 5, 15);
+    });
+
+    this.updateVariableMetric(data, 'pores', () => {
+      setText('val-pores', data.pores.toFixed(1) + '%');
+      setStatus('stat-pores', data.pores, 2, 10);
+    });
+
+    this.updateVariableMetric(data, 'acne', () => {
+      setText('val-acne', data.acne < 1 ? 'Clear' : data.acne.toFixed(1) + '%');
+      const acneEl = document.getElementById('stat-acne');
+      if (acneEl) {
+        if (data.acne < 1) acneEl.innerHTML = `<span class="status-badge status-normal">Clear</span>`;
+        else if (data.acne < 10) acneEl.innerHTML = `<span class="status-badge status-normal">Mild</span>`;
+        else if (data.acne < 30) acneEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
+        else acneEl.innerHTML = `<span class="status-badge status-high">Severe</span>`;
+      }
+    });
+
+    this.updateVariableMetric(data, 'hydration', () => {
+      setText('val-hydration', Math.round(data.hydration).toString() + '/100');
+      setStatus('stat-hydration', data.hydration, 40, 70, true);
+    });
+
+    this.updateVariableMetric(data, 'uvDamage', () => {
+      setText('val-uv', Math.round(data.uvDamage).toString() + '/100');
+      const uvEl = document.getElementById('stat-uv');
+      if (uvEl) {
+        if (data.uvDamage < 20) uvEl.innerHTML = `<span class="status-badge status-normal">Minimal</span>`;
+        else if (data.uvDamage < 50) uvEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
+        else uvEl.innerHTML = `<span class="status-badge status-high">High</span>`;
+      }
+    });
+
+    this.updateVariableMetric(data, 'melanin', () => {
+      setText('val-melanin', data.melanin.toFixed(2));
+      setStatus('stat-melanin', data.melanin, 5, 25);
+    });
+
+    this.updateVariableMetric(data, 'erythema', () => {
+      setText('val-erythema', data.erythema.toFixed(1));
+      setStatus('stat-erythema', data.erythema, 90, 150);
+    });
+
+    this.updateVariableMetric(data, 'texture', () => {
+      setText('val-texture', Math.round(data.texture).toString() + '/100');
+      setStatus('stat-texture', data.texture, 40, 75, true);
+    });
+
+    this.updateVariableMetric(data, 'glow', () => {
+      setText('val-luminance', Math.round(data.glow).toString() + '/100');
+      setStatus('stat-luminance', data.glow, 40, 70, true);
+    });
+
+    this.updateVariableMetric(data, 'elasticity', () => {
+      setText('val-elasticity', Math.round(data.elasticity).toString() + '/100');
+      setStatus('stat-elasticity', data.elasticity, 50, 80, true);
+    });
+
+    // ═══ DIAGNOSTICS ═══
+
+    setText(
+      'val-image-quality',
+      typeof data.imageQuality === 'string' ? data.imageQuality : Math.round(data.imageQuality).toString() + '/100'
+    );
     const iqEl = document.getElementById('stat-image-quality');
     if (iqEl && data.lighting) {
       const lt = data.lighting.lightingType;
@@ -863,26 +1012,17 @@ class FaceLandmarkerTask extends BaseVisionTask {
         iqEl.innerHTML = `<span class="status-badge status-high">⚠ Uneven (${uni}%)</span>`;
       }
     }
+  }
 
-    const acneEl = document.getElementById('stat-acne');
-    if (acneEl) {
-      if (data.acne < 1) acneEl.innerHTML = `<span class="status-badge status-normal">Clear</span>`;
-      else if (data.acne < 10) acneEl.innerHTML = `<span class="status-badge status-normal">Mild</span>`;
-      else if (data.acne < 30) acneEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
-      else acneEl.innerHTML = `<span class="status-badge status-high">Severe</span>`;
-    }
-    setText('val-acne', data.acne < 1 ? 'Clear' : data.acne.toFixed(1) + '%');
-
-    const uvEl = document.getElementById('stat-uv');
-    if (uvEl) {
-      if (data.uvDamage < 20) uvEl.innerHTML = `<span class="status-badge status-normal">Minimal</span>`;
-      else if (data.uvDamage < 50) uvEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
-      else uvEl.innerHTML = `<span class="status-badge status-high">High</span>`;
-    }
-    setText('val-uv', Math.round(data.uvDamage).toString() + '/100');
-
-    setText('val-elasticity', Math.round(data.elasticity).toString() + '/100');
-    setStatus('stat-elasticity', data.elasticity, 50, 80, true);
+  /**
+   * Helper: only update a variable metric if its element exists in the DOM
+   * (i.e., it was rendered for the current climate zone).
+   */
+  private updateVariableMetric(data: any, key: string, updater: () => void) {
+    const meta = VARIABLE_METRIC_REGISTRY[key as keyof typeof VARIABLE_METRIC_REGISTRY];
+    if (!meta) return;
+    const el = document.getElementById(meta.valId);
+    if (el) updater();
   }
 }
 

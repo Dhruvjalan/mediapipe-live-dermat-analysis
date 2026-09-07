@@ -45,251 +45,204 @@
           }
         }
       </style>
-      <table class="derm-table">
-        <thead>
-          <tr>
-            <th>Metric</th>
-            <th>Value</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">❤️</span>
-                <div>
-                  <strong>Skin Health Score</strong>
-                  <small>Overall Assessment</small>
+
+      <!-- ═══ SECTION 1: Fixed Metrics (Universal Baseline) ═══ -->
+      <div class="derm-section">
+        <div class="derm-section-header">
+          <div class="derm-section-title">
+            <span class="derm-section-icon">🔒</span>
+            <div>
+              <strong>Fixed Metrics</strong>
+              <small>Universal Baseline — Ojas & Dhatu Assessment</small>
+            </div>
+          </div>
+        </div>
+        <table class="derm-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Skin Health Score (Ojas) -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">❤️</span>
+                  <div>
+                    <strong>Skin Health Score</strong>
+                    <small>Overall Vitality · <em>Ojas</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-health" class="value-cell">--</td>
-            <td id="stat-health" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">✨</span>
-                <div>
-                  <strong>Glow Score</strong>
-                  <small>Skin Luminance</small>
+              </td>
+              <td id="val-health" class="value-cell">--</td>
+              <td id="stat-health" class="status-cell">--</td>
+            </tr>
+            <!-- Heart Rate -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">🫀</span>
+                  <div>
+                    <strong>Heart Rate</strong>
+                    <small>BPM · <em>Rasa-Rakta Dhatu</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-luminance" class="value-cell">--</td>
-            <td id="stat-luminance" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">💧</span>
-                <div>
-                  <strong>Hydration</strong>
-                  <small>Moisture Estimate</small>
+              </td>
+              <td id="val-heartrate" class="value-cell">--</td>
+              <td id="stat-heartrate" class="status-cell">--</td>
+            </tr>
+            <!-- Skin Perfusion -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">🩸</span>
+                  <div>
+                    <strong>Skin Perfusion</strong>
+                    <small>Microvascular Flow · <em>Rasa-Rakta Dhatu</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-hydration" class="value-cell">--</td>
-            <td id="stat-hydration" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🌞</span>
-                <div>
-                  <strong>Pigmentation</strong>
-                  <small>Melanin Index</small>
+              </td>
+              <td id="val-perfusion" class="value-cell">--</td>
+              <td id="stat-perfusion" class="status-cell">--</td>
+            </tr>
+            <!-- Wrinkle Score -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">😊</span>
+                  <div>
+                    <strong>Wrinkle Score</strong>
+                    <small>Collagen Density · <em>Vata</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-melanin" class="value-cell">--</td>
-            <td id="stat-melanin" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🔴</span>
-                <div>
-                  <strong>Redness</strong>
-                  <small>Vascular Erythema</small>
+              </td>
+              <td id="val-wrinkles" class="value-cell">--</td>
+              <td id="stat-wrinkles" class="status-cell">--</td>
+            </tr>
+            <!-- Dark Circles -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">👁️</span>
+                  <div>
+                    <strong>Dark Circle Score</strong>
+                    <small>Infraorbital Pigmentation · <em>Nidra Vega</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-erythema" class="value-cell">--</td>
-            <td id="stat-erythema" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🧴</span>
-                <div>
-                  <strong>Oiliness</strong>
-                  <small>Specular Glare</small>
+              </td>
+              <td id="val-dark-circles" class="value-cell">--</td>
+              <td id="stat-dark-circles" class="status-cell">--</td>
+            </tr>
+            <!-- Fatigue -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">😴</span>
+                  <div>
+                    <strong>Fatigue</strong>
+                    <small>Palpebral Narrowing · <em>Nidra Vega Dharana</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-oiliness" class="value-cell">--</td>
-            <td id="stat-oiliness" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🕳️</span>
-                <div>
-                  <strong>Pore Density</strong>
-                  <small>Texture variance</small>
+              </td>
+              <td id="val-fatigue" class="value-cell">--</td>
+              <td id="stat-fatigue" class="status-cell">--</td>
+            </tr>
+            <!-- Jaundice Risk -->
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">🟡</span>
+                  <div>
+                    <strong>Jaundice Risk</strong>
+                    <small>Yellowness Index · <em>Bhrajaka Pitta</em></small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-pores" class="value-cell">--</td>
-            <td id="stat-pores" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🪞</span>
-                <div>
-                  <strong>Texture Score</strong>
-                  <small>Surface Smoothness</small>
+              </td>
+              <td id="val-yellowness" class="value-cell">--</td>
+              <td id="stat-yellowness" class="status-cell">--</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ═══ SECTION 2: Climate-Adapted Variable Metrics ═══ -->
+      <div class="derm-section derm-section-variable">
+        <div class="derm-section-header">
+          <div class="derm-section-title">
+            <span class="derm-section-icon">🌍</span>
+            <div>
+              <strong>Climate-Adapted Metrics</strong>
+              <small id="climate-zone-subtitle">Detecting your region...</small>
+            </div>
+          </div>
+        </div>
+        <!-- Climate Zone Badge -->
+        <div id="climate-zone-badge" class="climate-zone-badge" style="display: none">
+          <span id="climate-zone-emoji" class="climate-zone-emoji"></span>
+          <div class="climate-zone-info">
+            <strong id="climate-zone-name"></strong>
+            <small id="climate-zone-desc"></small>
+          </div>
+        </div>
+        <!-- Ayurvedic Focus Badge -->
+        <div id="ayurvedic-focus-badge" class="ayurvedic-focus-badge" style="display: none">
+          <span class="ayurvedic-icon">🌿</span>
+          <span id="ayurvedic-focus-text"></span>
+        </div>
+        <!-- Variable metrics table — rows are dynamically injected by JS -->
+        <table class="derm-table" id="variable-metrics-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="variable-metrics-tbody">
+            <!-- Dynamically populated based on climate zone -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ═══ SECTION 3: Diagnostics ═══ -->
+      <div class="derm-section derm-section-diagnostics">
+        <div class="derm-section-header">
+          <div class="derm-section-title">
+            <span class="derm-section-icon">📷</span>
+            <div>
+              <strong>Diagnostics</strong>
+              <small>Image Quality & Calibration</small>
+            </div>
+          </div>
+        </div>
+        <table class="derm-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="metric-label">
+                  <span class="icon">📷</span>
+                  <div>
+                    <strong>Image Quality</strong>
+                    <small>Sharpness &amp; Glare</small>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td id="val-texture" class="value-cell">--</td>
-            <td id="stat-texture" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">😊</span>
-                <div>
-                  <strong>Wrinkle Score</strong>
-                  <small>Fine Lines Density</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-wrinkles" class="value-cell">--</td>
-            <td id="stat-wrinkles" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">😴</span>
-                <div>
-                  <strong>Fatigue</strong>
-                  <small>Eye Aspect Ratio</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-fatigue" class="value-cell">--</td>
-            <td id="stat-fatigue" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">👁️</span>
-                <div>
-                  <strong>Dark Circle Score</strong>
-                  <small>Under-eye Pigmentation</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-dark-circles" class="value-cell">--</td>
-            <td id="stat-dark-circles" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🫀</span>
-                <div>
-                  <strong>Heart Rate</strong>
-                  <small>BPM</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-heartrate" class="value-cell">--</td>
-            <td id="stat-heartrate" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🩸</span>
-                <div>
-                  <strong>Skin Perfusion</strong>
-                  <small>Vascular Estimate</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-perfusion" class="value-cell">--</td>
-            <td id="stat-perfusion" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🟡</span>
-                <div>
-                  <strong>Jaundice Risk</strong>
-                  <small>Yellowness Index</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-yellowness" class="value-cell">--</td>
-            <td id="stat-yellowness" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🔴</span>
-                <div>
-                  <strong>Acne Severity</strong>
-                  <small>Inflammation Density</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-acne" class="value-cell">--</td>
-            <td id="stat-acne" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">☀️</span>
-                <div>
-                  <strong>UV Damage Score</strong>
-                  <small>Estimated Sun Damage</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-uv" class="value-cell">--</td>
-            <td id="stat-uv" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">🧘‍♀️</span>
-                <div>
-                  <strong>Elasticity Score</strong>
-                  <small>Skin Firmness Estimate</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-elasticity" class="value-cell">--</td>
-            <td id="stat-elasticity" class="status-cell">--</td>
-          </tr>
-          <tr>
-            <td>
-              <div class="metric-label">
-                <span class="icon">📷</span>
-                <div>
-                  <strong>Image Quality</strong>
-                  <small>Sharpness & Glare</small>
-                </div>
-              </div>
-            </td>
-            <td id="val-image-quality" class="value-cell">--</td>
-            <td id="stat-image-quality" class="status-cell">--</td>
-          </tr>
-        </tbody>
-      </table>
+              </td>
+              <td id="val-image-quality" class="value-cell">--</td>
+              <td id="stat-image-quality" class="status-cell">--</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <button type="button" class="get-report-btn" id="get-report-btn">
         <span class="btn-icon">🩺</span>

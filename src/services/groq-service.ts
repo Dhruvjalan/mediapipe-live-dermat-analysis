@@ -45,17 +45,16 @@ export interface SkinMetrics {
   elasticity: number;
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
+
 const CANDIDATE_MODELS = [
-  'groq/compound-mini',
-  'groq/compound',
-  'openai/gpt-oss-120b',
-  'qwen/qwen3.6-27b',
+  'llama-3.3-70b-versatile',
   'llama-3.1-8b-instant',
-  'llama3-70b-8192',
-  'mixtral-8x7b-32768',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.6-27b',
+  'groq/compound',
 ];
 
 // ── System Prompt Builder ────────────────────────────────────────────────────
@@ -153,7 +152,9 @@ The report message should be a comprehensive health report in markdown with thes
 # 📋 Personalized Daily Routine
 # 🎯 Priority Actions — Top 3 This Week
 
-IMPORTANT: Always respond with ONLY valid JSON. No text before or after the JSON.`;
+CRITICAL INSTRUCTIONS:
+- DO NOT output any internal scratchpad, reasoning, or "Thinking Process:".
+- Respond ONLY with the strict JSON object. No conversational preamble or postscript outside the JSON.`;
 }
 
 // ── API Client ───────────────────────────────────────────────────────────────
@@ -209,6 +210,56 @@ export class GroqService {
     this.conversationHistory = [{ role: 'system', content: this.systemPrompt }];
   }
 
+  private cachedActiveModels: string[] | null = null;
+
+  /**
+   * Fetch active chat models dynamically from Groq's /models endpoint.
+   */
+  async fetchAvailableChatModels(): Promise<string[]> {
+    if (this.cachedActiveModels && this.cachedActiveModels.length > 0) {
+      return this.cachedActiveModels;
+    }
+
+    try {
+      const res = await fetch(GROQ_MODELS_URL, {
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.data)) {
+          // Filter out whisper, tts, embedding, and guard models
+          const chatModels = data.data
+            .map((m: any) => m.id)
+            .filter(
+              (id: string) =>
+                typeof id === 'string' &&
+                !id.includes('whisper') &&
+                !id.includes('tts') &&
+                !id.includes('embed') &&
+                !id.includes('guard')
+            );
+
+          if (chatModels.length > 0) {
+            // Prioritize top recommended models
+            const prioritized = CANDIDATE_MODELS.filter((m) => chatModels.includes(m));
+            const others = chatModels.filter((m: string) => !CANDIDATE_MODELS.includes(m));
+            this.cachedActiveModels = [...prioritized, ...others];
+            console.log('Dynamic Groq Active Models Loaded:', this.cachedActiveModels);
+            return this.cachedActiveModels;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not query Groq /models dynamically, using fallback candidates list:', e);
+    }
+
+    this.cachedActiveModels = CANDIDATE_MODELS;
+    return CANDIDATE_MODELS;
+  }
+
   /**
    * Send a message and get a streaming response.
    * @param userMessage  The user's reply (or empty string for the opening question)
@@ -230,10 +281,11 @@ export class GroqService {
       return this.generateMockStepResponse(userMessage, onChunk);
     }
 
+    const availableModels = await this.fetchAvailableChatModels();
     let response: Response | null = null;
     let lastErrorText = '';
 
-    for (const modelCandidate of CANDIDATE_MODELS) {
+    for (const modelCandidate of availableModels) {
       try {
         const res = await fetch(GROQ_API_URL, {
           method: 'POST',
@@ -257,23 +309,12 @@ export class GroqService {
 
         const errText = await res.text();
         lastErrorText = errText;
-        const isDecommissioned =
-          res.status === 404 ||
-          res.status === 400 ||
-          errText.includes('model_not_found') ||
-          errText.includes('model_decommissioned') ||
-          errText.includes('does not exist') ||
-          errText.includes('no longer supported');
-
-        if (isDecommissioned) {
-          console.warn(`Groq model '${modelCandidate}' unavailable (${res.status}), trying fallback model...`);
-          continue;
-        } else {
-          throw new Error(`Groq API error (${res.status}): ${errText}`);
-        }
+        console.warn(
+          `Groq model '${modelCandidate}' failed (${res.status}): ${errText}. Trying next candidate model...`
+        );
       } catch (err: any) {
-        if (err.message && err.message.includes('Groq API error')) throw err;
         lastErrorText = err.message || String(err);
+        console.warn(`Network/Request error on model '${modelCandidate}':`, err);
       }
     }
 
@@ -458,14 +499,28 @@ Your responses indicate consistent activity patterns. Restoring optimal hydratio
     );
   }
 
+  private stripThinkingBlocks(text: string): string {
+    if (!text) return '';
+    let cleaned = text;
+
+    // Remove <think>...</think> XML tags
+    cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+
+    // Remove "Thinking Process: ... " until JSON object or actual response
+    cleaned = cleaned.replace(/^Thinking Process:[\s\S]*?(?=\n\n\s*\{|\n\n\s*#|\n\n\s*\[|\{|\n\n[A-Z]|$)/gi, '');
+    cleaned = cleaned.replace(/Thinking Process:[\s\S]*?(?=(\{[\s\S]*"message"))/gi, '');
+
+    return cleaned.trim();
+  }
+
   private parseResponse(raw: string): LLMQuestion {
-    let msgText = raw;
+    let cleanedRaw = this.stripThinkingBlocks(raw);
+    let msgText = cleanedRaw;
     let options: OptionCard[] | undefined = undefined;
     let isReport = false;
 
     try {
-      // Try to extract JSON from the response (LLM sometimes wraps in markdown)
-      let jsonStr = raw.trim();
+      let jsonStr = cleanedRaw.trim();
 
       // Remove markdown code fences if present
       if (jsonStr.startsWith('```json')) {
@@ -478,13 +533,34 @@ Your responses indicate consistent activity patterns. Restoring optimal hydratio
       }
       jsonStr = jsonStr.trim();
 
+      // If there is surrounding text outside the JSON object, extract between first { and last }
+      const firstBrace = jsonStr.indexOf('{');
+      const lastBrace = jsonStr.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+      }
+
       const parsed = JSON.parse(jsonStr);
-      msgText = parsed.message || raw;
+      msgText = parsed.message || parsed.report || parsed.content || cleanedRaw;
       options = parsed.options || undefined;
       isReport = !!parsed.isReport;
     } catch {
-      msgText = raw;
+      msgText = cleanedRaw;
     }
+
+    // Clean any residual JSON or markdown code wrapping if the raw output was direct markdown
+    if (msgText.startsWith('```markdown')) {
+      msgText = msgText.slice(11);
+    } else if (msgText.startsWith('```md')) {
+      msgText = msgText.slice(5);
+    } else if (msgText.startsWith('```')) {
+      msgText = msgText.slice(3);
+    }
+    if (msgText.endsWith('```')) {
+      msgText = msgText.slice(0, -3);
+    }
+
+    msgText = this.stripThinkingBlocks(msgText);
 
     // Auto-detect report if headers are present even if isReport flag was omitted in JSON
     const reportKeywords = [
@@ -495,12 +571,19 @@ Your responses indicate consistent activity patterns. Restoring optimal hydratio
       'Lifestyle Assessment',
       'Personalized Daily Routine',
       'Priority Actions',
+      'Modern Health Tips',
     ];
 
     const hasReportHeader = reportKeywords.some((kw) => msgText.includes(kw) || raw.includes(kw));
 
     if (hasReportHeader) {
       isReport = true;
+    }
+
+    // Fallback if msgText is still empty or whitespace
+    if (!msgText) {
+      msgText =
+        "I have collected your skin scan data and lifestyle responses! I'm ready to generate your comprehensive health report.";
     }
 
     return {

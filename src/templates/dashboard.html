@@ -1,186 +1,92 @@
-<div class="dashboard-wrapper" style="padding: 10px">
-  <header style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px">
-    <h1>Patient Telemetry & History</h1>
-    <div
-      class="user-pill"
-      style="
-        background: #ffffff;
-        padding: 8px 16px;
-        border-radius: 20px;
-        border: 1px solid #d2d2d7;
-        font-size: 13px;
-        font-weight: 600;
-      "
-    >
-      Dhruv Jalan
-    </div>
-  </header>
+<div class="progress-page">
+  <div class="progress-inner">
+    <header class="progress-header">
+      <div>
+        <h1 class="progress-title">Your health progress</h1>
+        <p class="progress-subtitle">Every scan, and the consultation after it, in one place.</p>
+      </div>
+      <span class="progress-user">
+        <span class="material-icons" aria-hidden="true">person</span>
+        <span id="progress-user-name">Guest</span>
+      </span>
+    </header>
 
-  <div
-    class="cta-banner"
-    style="
-      background: linear-gradient(135deg, #0071e3, #4589ff);
-      color: #ffffff;
-      padding: 30px;
-      border-radius: 16px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 30px;
-    "
-  >
-    <div>
-      <h2 style="font-size: 22px; margin-bottom: 6px">Ready for your daily skin check?</h2>
-      <p style="font-size: 14px; opacity: 0.9">Complete a multi-angle scan to update your clinical trend analytics.</p>
+    <p class="progress-notice" id="progress-notice" role="status" hidden></p>
+    <p class="progress-toast" id="progress-toast" role="status" aria-live="polite"></p>
+
+    <section class="progress-card progress-empty" id="progress-empty" aria-labelledby="empty-title" hidden>
+      <span class="material-icons progress-empty-icon" aria-hidden="true">insights</span>
+      <h2 class="progress-card-title" id="empty-title" tabindex="-1">No scans yet</h2>
+      <p>
+        Your first scan starts your history. Each scan, and the consultation after it, is saved here so you can see how
+        your skin and habits change over time.
+      </p>
+      <a class="progress-btn progress-btn-primary" href="#/face-landmarker">
+        <span class="material-icons" aria-hidden="true">photo_camera</span> Start your first scan
+      </a>
+    </section>
+
+    <div class="progress-content" id="progress-content" hidden>
+      <section class="progress-card progress-overview" aria-labelledby="overview-title">
+        <div class="progress-hero">
+          <h2 class="progress-card-title" id="overview-title">Skin health score</h2>
+          <p class="progress-hero-value"><span id="hero-score">--</span><span class="progress-hero-max">/100</span></p>
+          <p class="progress-hero-meta"><span id="hero-level"></span><span id="hero-delta"></span></p>
+          <p class="progress-muted" id="hero-date"></p>
+          <a class="progress-btn progress-btn-primary" href="#/face-landmarker">
+            <span class="material-icons" aria-hidden="true">photo_camera</span> New scan
+          </a>
+        </div>
+        <figure class="progress-chart">
+          <figcaption class="progress-chart-caption">Score at each scan</figcaption>
+          <div class="score-chart" id="score-chart"></div>
+          <p class="progress-footnote" id="chart-footnote" hidden></p>
+        </figure>
+      </section>
+
+      <section class="progress-card" aria-labelledby="changes-title">
+        <h2 class="progress-card-title" id="changes-title">Since your last scan</h2>
+        <p class="progress-muted" id="changes-subtitle"></p>
+        <div id="changes-list"></div>
+      </section>
+
+      <section class="progress-card" aria-labelledby="habits-title">
+        <h2 class="progress-card-title" id="habits-title">Your habits over time</h2>
+        <p class="progress-muted">What you told Dr. AyurGenX at each consultation.</p>
+        <div id="habits-table"></div>
+      </section>
+
+      <section class="progress-card" aria-labelledby="sessions-title">
+        <div class="progress-card-head">
+          <h2 class="progress-card-title" id="sessions-title" tabindex="-1">Past sessions</h2>
+          <button type="button" class="progress-btn progress-btn-quiet-danger" id="clear-history-btn">
+            <span class="material-icons" aria-hidden="true">delete_sweep</span> Clear all history
+          </button>
+        </div>
+        <ol class="session-list" id="session-list"></ol>
+        <p class="progress-footnote">
+          <span class="material-icons" aria-hidden="true">lock</span>
+          Saved only in this browser, on this device. Clearing the browser's site data deletes it.
+        </p>
+      </section>
     </div>
-    <a
-      href="#/face-landmarker"
-      style="
-        background: #ffffff;
-        color: #0071e3;
-        padding: 10px 20px;
-        border-radius: 20px;
-        text-decoration: none;
-        font-weight: 600;
-        font-size: 14px;
-        display: inline-block;
-      "
-      >Start Camera Scan</a
-    >
   </div>
 
-  <div class="grid" style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px; margin-bottom: 30px">
-    <div
-      class="panel"
-      style="
-        background: #ffffff;
-        border-radius: 16px;
-        padding: 24px;
-        border: 1px solid #d2d2d7;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
-      "
-    >
-      <h3 style="font-size: 16px; margin-bottom: 16px">Historical Scan Logs</h3>
-      <table style="width: 100%; border-collapse: collapse; margin-top: 10px">
-        <thead>
-          <tr>
-            <th
-              style="
-                text-align: left;
-                padding: 12px;
-                font-size: 13px;
-                border-bottom: 1px solid #d2d2d7;
-                color: #86868b;
-                font-weight: 600;
-              "
-            >
-              Scan ID / Date
-            </th>
-            <th
-              style="
-                text-align: left;
-                padding: 12px;
-                font-size: 13px;
-                border-bottom: 1px solid #d2d2d7;
-                color: #86868b;
-                font-weight: 600;
-              "
-            >
-              Health Score
-            </th>
-            <th
-              style="
-                text-align: left;
-                padding: 12px;
-                font-size: 13px;
-                border-bottom: 1px solid #d2d2d7;
-                color: #86868b;
-                font-weight: 600;
-              "
-            >
-              Hydration
-            </th>
-            <th
-              style="
-                text-align: left;
-                padding: 12px;
-                font-size: 13px;
-                border-bottom: 1px solid #d2d2d7;
-                color: #86868b;
-                font-weight: 600;
-              "
-            >
-              Erythema
-            </th>
-            <th
-              style="
-                text-align: left;
-                padding: 12px;
-                font-size: 13px;
-                border-bottom: 1px solid #d2d2d7;
-                color: #86868b;
-                font-weight: 600;
-              "
-            >
-              Status
-            </th>
-          </tr>
-        </thead>
-        <tbody id="history-rows">
-          <tr>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7">
-              scan_1718290192
-            </td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7">
-              <strong>88%</strong>
-            </td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7">65%</td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7">18%</td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7">
-              <span style="color: #34c759; font-weight: 600">Optimal</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+  <dialog class="progress-dialog report-dialog" id="report-dialog" aria-label="Saved health report">
+    <div class="report-dialog-bar">
+      <button type="button" class="progress-icon-btn" id="report-dialog-close" aria-label="Close report">
+        <span class="material-icons" aria-hidden="true">close</span>
+      </button>
     </div>
+    <div class="report-dialog-body" id="report-dialog-body"></div>
+  </dialog>
 
-    <div
-      class="panel"
-      style="
-        background: #ffffff;
-        border-radius: 16px;
-        padding: 24px;
-        border: 1px solid #d2d2d7;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
-      "
-    >
-      <h3 style="font-size: 16px; margin-bottom: 16px">System Status</h3>
-      <p style="font-size: 13px; color: #86868b; margin-bottom: 15px">Model Pipeline: Active</p>
-      <p style="font-size: 13px; color: #86868b; margin-bottom: 15px">OpenCV Compute Engine: Online</p>
-      <p style="font-size: 13px; color: #86868b">Storage Sync: Encrypted Local</p>
+  <dialog class="progress-dialog confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <h2 class="progress-card-title" id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <div class="confirm-actions">
+      <button type="button" class="progress-btn" id="confirm-cancel">Cancel</button>
+      <button type="button" class="progress-btn progress-btn-danger" id="confirm-ok">Delete</button>
     </div>
-  </div>
+  </dialog>
 </div>
-
-<script>
-  try {
-    const history = JSON.parse(localStorage.getItem('ayurgenx_scan_history') || '[]');
-    if (history.length > 0) {
-      const tbody = document.getElementById('history-rows');
-      if (tbody) {
-        tbody.innerHTML = '';
-        history.forEach((scan) => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7;">${scan.id}</td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7;"><strong>${scan.health}%</strong></td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7;">${scan.hydration}%</td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7;">${scan.erythema}%</td>
-            <td style="text-align: left; padding: 12px; font-size: 13px; border-bottom: 1px solid #d2d2d7;"><span style="color:#34c759; font-weight:600;">Recorded</span></td>
-          `;
-          tbody.appendChild(tr);
-        });
-      }
-    }
-  } catch (e) {}
-</script>

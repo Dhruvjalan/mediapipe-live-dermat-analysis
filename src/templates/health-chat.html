@@ -1,82 +1,96 @@
 <div class="health-chat-container">
   <!-- Metrics Summary Bar -->
   <div class="chat-metrics-bar" id="chat-metrics-bar">
-    <div class="chat-metrics-header">
-      <div class="chat-metrics-title">
-        <span class="material-icons" style="color: var(--primary); font-size: 20px">analytics</span>
-        <span>Your Skin Scan Results</span>
+    <div class="chat-metrics-inner">
+      <div class="chat-metrics-header">
+        <div class="chat-metrics-title">
+          <span class="chat-metrics-title-icon">🔬</span>
+          <div>
+            <strong>Skin Telemetry Ingested</strong>
+            <small>Live Dermal Scan Diagnostics</small>
+          </div>
+        </div>
+        <button class="chat-metrics-toggle" id="metrics-toggle-btn" aria-label="Toggle Metrics Summary">
+          <span class="material-icons">expand_more</span>
+        </button>
       </div>
-      <button class="chat-metrics-toggle" id="metrics-toggle-btn" aria-label="Toggle Metrics Summary">
-        <span class="material-icons">expand_more</span>
-      </button>
+      <div class="chat-metrics-grid" id="chat-metrics-grid">
+        <div class="chat-metric-pill pill-health">
+          <span class="pill-icon">❤️</span>
+          <div class="pill-text-group">
+            <span class="pill-label">Health</span>
+            <span class="pill-value" id="chat-m-health">--</span>
+          </div>
+        </div>
+        <div class="chat-metric-pill pill-glow">
+          <span class="pill-icon">✨</span>
+          <div class="pill-text-group">
+            <span class="pill-label">Glow</span>
+            <span class="pill-value" id="chat-m-glow">--</span>
+          </div>
+        </div>
+        <div class="chat-metric-pill pill-hydration">
+          <span class="pill-icon">💧</span>
+          <div class="pill-text-group">
+            <span class="pill-label">Hydration</span>
+            <span class="pill-value" id="chat-m-hydration">--</span>
+          </div>
+        </div>
+        <div class="chat-metric-pill pill-oiliness">
+          <span class="pill-icon">🧴</span>
+          <div class="pill-text-group">
+            <span class="pill-label">Oiliness</span>
+            <span class="pill-value" id="chat-m-oiliness">--</span>
+          </div>
+        </div>
+        <div class="chat-metric-pill pill-texture">
+          <span class="pill-icon">🪞</span>
+          <div class="pill-text-group">
+            <span class="pill-label">Texture</span>
+            <span class="pill-value" id="chat-m-texture">--</span>
+          </div>
+        </div>
+        <div class="chat-metric-pill pill-elasticity">
+          <span class="pill-icon">🧘</span>
+          <div class="pill-text-group">
+            <span class="pill-label">Elasticity</span>
+            <span class="pill-value" id="chat-m-elasticity">--</span>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="chat-metrics-grid" id="chat-metrics-grid">
-      <div class="chat-metric-pill">
-        <span class="pill-icon">❤️</span>
-        <span class="pill-label">Health</span> <span class="pill-value" id="chat-m-health">--</span>
+  </div>
+
+  <!-- Chat Content Centered Wrapper -->
+  <div class="chat-main-wrapper">
+    <!-- Chat Area -->
+    <div class="chat-messages-area" id="chat-messages">
+      <!-- Welcome message injected dynamically by JS engine -->
+      <!-- Option Cards Container (Anchored in stream to eliminate any text overlap) -->
+      <div class="chat-options-container" id="chat-options" style="display: none">
+        <!-- Dynamically rendered option cards -->
       </div>
-      <div class="chat-metric-pill">
-        <span class="pill-icon">✨</span>
-        <span class="pill-label">Glow</span> <span class="pill-value" id="chat-m-glow">--</span>
-      </div>
-      <div class="chat-metric-pill">
-        <span class="pill-icon">💧</span>
-        <span class="pill-label">Hydration</span>
-        <span class="pill-value" id="chat-m-hydration">--</span>
-      </div>
-      <div class="chat-metric-pill">
-        <span class="pill-icon">🧴</span>
-        <span class="pill-label">Oiliness</span> <span class="pill-value" id="chat-m-oiliness">--</span>
-      </div>
-      <div class="chat-metric-pill">
-        <span class="pill-icon">🪞</span>
-        <span class="pill-label">Texture</span> <span class="pill-value" id="chat-m-texture">--</span>
-      </div>
-      <div class="chat-metric-pill">
-        <span class="pill-icon">🧘</span>
-        <span class="pill-label">Elasticity</span>
-        <span class="pill-value" id="chat-m-elasticity">--</span>
-      </div>
-      <div
-        class="chat-metric-pill"
-        id="chat-location-pill"
-        style="background: rgba(46, 125, 50, 0.08); border-color: rgba(76, 175, 80, 0.3)"
-      >
-        <span class="pill-icon">📍</span>
-        <span class="pill-label">Location</span>
-        <span class="pill-value" id="chat-m-location" style="color: #2e7d32; font-weight: 600">Detecting...</span>
-      </div>
+    </div>
+
+    <!-- Report Container (hidden until generated) -->
+    <div class="chat-report-container" id="chat-report" style="display: none">
+      <!-- Comprehensive generated markdown/HTML AI Report rendered here -->
     </div>
   </div>
 
-  <!-- Chat Area -->
-  <div class="chat-messages-area" id="chat-messages">
-    <!-- Welcome message injected dynamically by JS engine -->
-  </div>
-
-  <!-- Option Cards Container (For quick reply actions) -->
-  <div class="chat-options-container" id="chat-options">
-    <!-- Dynamically rendered option cards -->
-  </div>
-
-  <!-- Report Container (hidden until generated) -->
-  <div class="chat-report-container" id="chat-report" style="display: none">
-    <!-- Comprehensive generated markdown/HTML AI Report rendered here -->
-  </div>
-
-  <!-- Voice Recording Screen Center Banner Overlay (hidden by default) -->
+  <!-- Centre overlay: recording (mic), or busy while transcribing / preparing the report (hidden by default) -->
   <div class="voice-recording-overlay" id="voice-recording-banner" style="display: none">
-    <div class="voice-recording-card">
+    <div class="voice-recording-card" id="voice-banner-card">
       <div class="voice-mic-outer">
         <div class="voice-pulse-ring"></div>
-        <button type="button" class="voice-mic-button" id="voice-banner-mic-btn" aria-label="Stop Recording">
-          <span class="material-icons voice-mic-icon">mic</span>
+        <button type="button" class="voice-mic-button" id="voice-banner-mic-btn" aria-label="Stop recording">
+          <span class="material-icons voice-mic-icon" id="voice-banner-icon">mic</span>
         </button>
       </div>
 
       <div class="voice-status-block">
         <span class="voice-recording-label" id="voice-banner-label">Listening...</span>
-        <span class="voice-recording-hint" id="voice-banner-hint">Speak your answer now. Tap icon to stop.</span>
+        <span class="voice-recording-hint" id="voice-banner-hint">Speak your answer clearly. Tap to complete.</span>
       </div>
 
       <div class="voice-recording-wave" id="voice-banner-wave">
@@ -84,37 +98,41 @@
       </div>
 
       <button type="button" class="voice-stop-action-btn" id="voice-banner-stop-btn">
-        <span class="material-icons">stop</span> Done & Transcribe
+        <span class="material-icons">check_circle</span> Done &amp; Transcribe
       </button>
     </div>
   </div>
 
   <!-- Input Bar -->
   <div class="chat-input-bar" id="chat-input-bar">
-    <div class="chat-input-wrapper">
-      <input
-        type="text"
-        id="chat-input"
-        class="chat-input"
-        placeholder="Type your answer or ask the AI dermatologist..."
-        autocomplete="off"
-      />
-      <button
-        type="button"
-        class="chat-voice-btn"
-        id="chat-voice-btn"
-        aria-label="Voice Input"
-        title="Speak your answer with Whisper AI"
-      >
-        <span class="material-icons">mic</span>
-      </button>
-      <button class="chat-send-btn" id="chat-send-btn" aria-label="Send Message">
-        <span class="material-icons">send</span>
-      </button>
-    </div>
-    <div class="chat-input-hint">
-      <span id="chat-question-counter">Question 1 of ~6</span>
-      <span class="chat-powered-by">Powered by Groq + Whisper AI</span>
+    <div class="chat-input-inner">
+      <div class="chat-input-wrapper">
+        <input
+          type="text"
+          id="chat-input"
+          class="chat-input"
+          placeholder="Type your lifestyle response or ask Dr. AyurGenX..."
+          autocomplete="off"
+        />
+        <button
+          type="button"
+          class="chat-voice-btn"
+          id="chat-voice-btn"
+          aria-label="Voice Input"
+          title="Speak your answer with Whisper AI"
+        >
+          <span class="material-icons">mic</span>
+        </button>
+        <button class="chat-send-btn" id="chat-send-btn" aria-label="Send Message">
+          <span class="material-icons">arrow_upward</span>
+        </button>
+      </div>
+      <div class="chat-input-hint">
+        <span id="chat-question-counter" class="question-counter-badge">
+          <span class="live-dot"></span>Question 1 of ~6
+        </span>
+        <span class="chat-powered-by">🌿 AyurGenX Clinical AI &bull; Private &amp; Secure</span>
+      </div>
     </div>
   </div>
 </div>

@@ -1,9 +1,26 @@
 /**
- * Groq LLM Service — Handles streaming chat completions via Groq's
- * OpenAI-compatible API.  No SDK needed, just fetch + SSE parsing.
+ * Groq LLM Service — runs the consultation and writes the report via Groq's
+ * OpenAI-compatible API. No SDK needed, just fetch + SSE parsing.
+ *
+ * The report is never written freely: the user's answers are first extracted
+ * into structured facts and scored in code (lifestyle-risk), and the model then
+ * writes the letter from that assessment, so worrying answers can't be glossed over.
  */
 
-import { getCachedLocation } from './location-service';
+import {
+  assessLifestyle,
+  detectSafetyFlags,
+  emptyProfile,
+  overallVerdict,
+  parseLifestyleProfile,
+  type LifestyleAssessment,
+  type LifestyleProfile,
+  type SafetyFlag,
+  type Verdict,
+} from './lifestyle-risk';
+import { healthLevel, interpretSkin, type SkinMetrics } from './skin-interpretation';
+
+export type { SkinMetrics } from './skin-interpretation';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,143 +35,187 @@ export interface OptionCard {
   value: string;
 }
 
+/** What the report was written from: computed by the app, not by the LLM. */
+export interface ReportAssessment {
+  verdict: Verdict;
+  lifestyle: LifestyleAssessment;
+  skinHealth: number;
+  /** The user's answers couldn't be read, so the verdict is capped and the report says so. */
+  incomplete: boolean;
+}
+
 export interface LLMQuestion {
   message: string;
   options?: OptionCard[];
   isReport?: boolean;
+  /** Set on reports. */
+  assessment?: ReportAssessment;
 }
 
-export interface SkinMetrics {
-  health: number;
-  glow: number;
-  hydration: number;
-  melanin: number;
-  erythema: number;
-  oiliness: number;
-  pores: number;
-  texture: number;
-  wrinkles: number;
-  fatigue: number;
-  darkCircles: number;
-  heartRate: number;
-  perfusion: number;
-  yellowness: number;
-  imageQuality: number;
-  acne: number;
-  uvDamage: number;
-  elasticity: number;
+interface TranscriptEntry {
+  speaker: 'advisor' | 'user';
+  text: string;
 }
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
 
-const CANDIDATE_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'qwen/qwen3.6-27b',
-  'groq/compound',
-];
+/**
+ * Strongest first; only these are ever used (very small models follow the honesty
+ * rules poorly). Models Groq stops serving are skipped automatically.
+ */
+const CHAT_MODELS = ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b'];
+const CHAT_TEMPERATURE = 0.5;
+const REPORT_TEMPERATURE = 0.3;
 
-// ── System Prompt Builder ────────────────────────────────────────────────────
-
-function _buildLocationBlock(): string {
-  const loc = getCachedLocation();
-  if (!loc) return 'USER LOCATION: Not detected\n';
-
-  return `USER LOCATION (auto-detected):
-• City: ${loc.city}${loc.state ? ', ' + loc.state : ''}
-• Country: ${loc.country}
-• Coordinates: ${loc.latitude.toFixed(4)}°N, ${loc.longitude.toFixed(4)}°E
-Use this location to tailor advice (local climate, water quality, UV exposure, regional diet, available botanicals).
-`;
-}
+// ── Prompts ──────────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(metrics: SkinMetrics): string {
-  // Interpret key flags the LLM should branch on
-  const flags: string[] = [];
-  if (metrics.hydration < 40) flags.push('LOW_HYDRATION');
-  if (metrics.oiliness > 15) flags.push('HIGH_OILINESS');
-  if (metrics.pores > 10) flags.push('ELEVATED_PORES');
-  if (metrics.erythema > 140) flags.push('HIGH_REDNESS');
-  if (metrics.acne > 10) flags.push('ACNE_PRESENT');
-  if (metrics.darkCircles > 25) flags.push('DARK_CIRCLES');
-  if (metrics.fatigue < 0.22) flags.push('FATIGUED');
-  if (metrics.wrinkles > 4) flags.push('WRINKLES_ELEVATED');
-  if (metrics.uvDamage > 30) flags.push('UV_DAMAGE');
-  if (metrics.yellowness > 135) flags.push('YELLOWNESS_HIGH');
-  if (metrics.elasticity < 50) flags.push('LOW_ELASTICITY');
-  if (metrics.health < 50) flags.push('LOW_OVERALL_HEALTH');
+  const readings = interpretSkin(metrics);
+  const overall = {
+    good: 'looking healthy overall',
+    fair: 'in a decent range, with a few things to improve',
+    concern: 'showing several things that need attention',
+  }[healthLevel(metrics.health)];
+  const observations = readings.map((r) => `- ${r.label}: ${r.phrase}`).join('\n');
+  const worthAsking = readings.filter((r) => r.level !== 'good').map((r) => r.phrase);
+  const pulse =
+    metrics.heartRate > 0
+      ? `\n- Resting pulse (camera estimate): ${metrics.heartRate > 100 ? 'on the high side' : metrics.heartRate < 50 ? 'on the low side' : 'in the normal range'}`
+      : '';
+  const quality =
+    metrics.imageQuality < 60 ? '\nThe scan was taken in poor conditions (light or focus), so treat these readings as rough.' : '';
 
-  return `You are Dr. AyurGenX — a friendly, witty, and knowledgeable health consultant who blends modern dermatology with Ayurvedic wisdom. You use emojis, analogies, and a warm conversational tone. You're NOT clinical or robotic.
+  return `You are Dr. AyurGenX, a wellness advisor who blends modern skincare science with Ayurveda. You are warm and respectful, but honesty comes first: you never sugar-coat or praise a habit that is harming the person.
 
-REAL-TIME SKIN SCAN DATA (from the user's webcam analysis):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Skin Health Score: ${metrics.health.toFixed(0)}/100
-• Glow Score: ${metrics.glow.toFixed(0)}/100
-• Hydration: ${metrics.hydration.toFixed(0)}/100
-• Melanin Index: ${metrics.melanin.toFixed(1)}
-• Redness (Erythema): ${metrics.erythema.toFixed(1)}
-• Oiliness: ${metrics.oiliness.toFixed(1)}%
-• Pore Density: ${metrics.pores.toFixed(1)}%
-• Texture Score: ${metrics.texture.toFixed(0)}/100
-• Wrinkle Density: ${metrics.wrinkles.toFixed(1)}%
-• Fatigue (EAR): ${metrics.fatigue.toFixed(3)}
-• Dark Circles: ${metrics.darkCircles.toFixed(0)}%
-• Heart Rate: ${metrics.heartRate > 0 ? metrics.heartRate.toFixed(0) + ' BPM' : 'Not measured'}
-• Skin Perfusion: ${metrics.perfusion.toFixed(0)}/100
-• Yellowness Index: ${metrics.yellowness.toFixed(1)}
-• Acne Severity: ${metrics.acne.toFixed(1)}%
-• UV Damage: ${metrics.uvDamage.toFixed(0)}/100
-• Elasticity: ${metrics.elasticity.toFixed(0)}/100
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT THE CAMERA SCAN SUGGESTS (webcam estimates, not a diagnosis; describe them in plain words, never as numbers):
+- Overall: ${overall}
+${observations}${pulse}${quality}
+Worth asking about: ${worthAsking.length ? worthAsking.join('; ') : 'nothing stands out'}
 
-${_buildLocationBlock()}
-FLAGGED CONCERNS: ${flags.length > 0 ? flags.join(', ') : 'NONE — skin looks healthy!'}
+YOUR JOB NOW: learn about the person's daily habits, ONE question per message, 5-7 questions in total. Cover sleep (hours a night), water intake, eating pattern (meals a day, skipping meals, fasting), stress, skincare routine and sun protection. Order the questions by what the scan suggests (for example, ask about sleep first if the eyes look tired or dark).
 
-YOUR TASK:
-1. Ask 5-7 smart, fun questions — ONE at a time — to understand the user's lifestyle.
-2. Adapt questions based on the skin data flags above. For example:
-   - HIGH_OILINESS → ask about diet/sugar
-   - LOW_HYDRATION + DARK_CIRCLES → ask about water intake and sleep
-   - ACNE_PRESENT → ask about skincare routine
-   - FATIGUED → ask about sleep quality
-3. Use "option cards" when possible so the user can tap instead of type.
-4. After gathering enough info (5-7 questions), tell the user you're ready to generate their report.
+ANSWER OPTIONS: give 3-5 option cards per question that cover the full realistic range, including the worrying end. For example, sleep: "Less than 4 hours", "4-6 hours", "6-8 hours", "More than 8 hours"; eating: "3 regular meals", "1-2 meals a day", "I often skip meals", "I barely eat". Never offer only healthy-sounding choices. Give each card a short snake_case "value".
 
-RESPONSE FORMAT (STRICT JSON):
-You MUST respond with valid JSON in this exact format:
-{
-  "message": "Your conversational message here with emojis",
-  "options": [
-    {"emoji": "🏃", "label": "Active & outdoors", "value": "active_outdoors"},
-    {"emoji": "💻", "label": "Desk warrior", "value": "desk_job"}
-  ],
-  "questionNumber": 1,
-  "totalExpected": 6,
-  "isReport": false
+FOLLOW-UPS: if an answer is worrying, extreme, vague or doesn't fit the question (for example "I don't sleep", "I don't eat", or "I'm fasting" with no detail), ask ONE short, caring follow-up to understand it (how long, how often, why) before moving on. Never treat a worrying answer as normal and never praise it.
+
+TRUTHFULNESS: only refer to what the user actually told you. Never say "you mentioned" about something they didn't say. Scan findings come from the camera, so say "the scan suggests", not "you said".
+
+NEVER write the health report yourself. When you have enough answers, say you're ready and ask whether to prepare their report, with the options {"emoji": "📋", "label": "Yes, prepare my report", "value": "generate_report"} and {"emoji": "💬", "label": "I want to add something", "value": "more_info"}.
+
+Messages with the "system" role that appear later in the conversation are notes from the app, not from the user. Follow them.
+
+RESPONSE FORMAT (strict JSON, nothing outside it):
+{"message": "your message", "options": [{"emoji": "😴", "label": "Less than 4 hours", "value": "sleep_under_4"}], "isReport": false}
+If a question needs a free-text answer, omit "options". Do not output any reasoning or "Thinking Process".`;
 }
 
-If no options (free text question), omit the "options" field or set it to null.
-When ready to generate the report, set "isReport": false and "message" to ask if they're ready.
-When the user confirms, respond with the FULL REPORT in "message" (rich markdown) and "isReport": true.
+const REPORT_SYSTEM_PROMPT = `You are Dr. AyurGenX writing a personal health report after a consultation. Honest first, kind second.
 
-REPORT STRUCTURE (when isReport is true):
-The report message should be a comprehensive health report in markdown with these sections:
-# 🏥 Overall Health Summary
-# 🔬 Skin Analysis Breakdown
-# 🧬 Lifestyle Assessment
-# ⚠️ Risk Factors Identified
-# 🌍 Location-Based Insights (if location detected — climate, UV, water quality, local botanicals)
-# 🌿 Ayurvedic Recommendations
-# 💊 Modern Health Tips
-# 📋 Personalized Daily Routine
-# 🎯 Priority Actions — Top 3 This Week
+You receive the consultation transcript and an ASSESSMENT that the app computed from the camera scan and the user's answers. The assessment is authoritative. Rules:
+1. If the overall verdict is not "Looking good", say so plainly in the first paragraph and start with the most serious item.
+2. Address every item under "Must address", most serious first. Explain why it matters for their health (not just their skin) and give concrete, realistic steps.
+3. For any item marked "see a doctor", tell them clearly and kindly to see a doctor soon. Never suggest that skincare, diet tweaks or herbs can fix it.
+4. Never describe the person, their skin or their habits as healthy, fine, balanced or "on the right track" unless the verdict is "Looking good". Never praise a worrying habit.
+5. Only mention habits the user actually reported in the transcript; don't guess the ones listed as not discussed. Scan findings are camera estimates, so say "the scan suggests".
+6. No numbers out of 100, no tables, no pipe characters, no horizontal rules, no emojis in headers.
+7. Ayurvedic suggestions should be practical and woven in, never a substitute for medical care.
 
-CRITICAL INSTRUCTIONS:
-- DO NOT output any internal scratchpad, reasoning, or "Thinking Process:".
-- Respond ONLY with the strict JSON object. No conversational preamble or postscript outside the JSON.`;
+Use these ## sections in this order:
+## The Most Important Thing (only when the verdict is not "Looking good")
+## How Your Skin is Doing
+## Your Habits and Your Health
+## What I'd Suggest
+## Your Morning and Evening Routine
+## This Week's Focus
+Write 350-600 words of flowing paragraphs. Close with encouragement that is realistic: being supportive never means pretending things are fine.
+
+Respond with strict JSON only: {"message": "<the report in markdown>", "isReport": true}`;
+
+const EXTRACTION_PROMPT = `You extract facts from a skincare consultation transcript. Use ONLY what the User said, never the Advisor's questions or suggestions. If something was not clearly stated, use null.
+Convert ranges to one number (use the midpoint; "less than 4 hours" -> 3, "under 1 litre" -> 0.75, "8+ hours" -> 8.5). If the user says they don't sleep, sleepHours is 0. If they say they don't eat, eatingPattern is "not_eating" and mealsPerDay is 0. "extended_fasting" means going a day or more without food; time-restricted eating windows are "intermittent_fasting".
+
+Return strict JSON with exactly these keys:
+{"sleepHours": number|null, "waterLiters": number|null, "mealsPerDay": number|null,
+ "eatingPattern": "regular"|"irregular"|"skips_meals"|"intermittent_fasting"|"extended_fasting"|"not_eating"|null,
+ "stress": "low"|"moderate"|"high"|"severe"|null,
+ "skincare": "none"|"basic"|"full"|"prescription"|null,
+ "sunProtection": "daily"|"sometimes"|"never"|null,
+ "smoking": true|false|null,
+ "alcohol": "none"|"occasional"|"frequent"|"heavy"|null,
+ "exercise": "none"|"light"|"regular"|null}`;
+
+function followUpNote(flags: SafetyFlag[]): string {
+  const concerns = flags.map((f) => `${f.label} (${f.severity})`).join('; ');
+  return `App note, not from the user: their last answer suggests ${concerns}. Before moving on, ask ONE short, caring follow-up question to understand it (how long, how often, why). Do not treat it as normal and do not praise it.`;
+}
+
+function formatTranscript(entries: TranscriptEntry[]): string {
+  return entries.map((e) => `${e.speaker === 'user' ? 'User' : 'Advisor'}: ${e.text}`).join('\n');
+}
+
+const SEVERITY_TAGS = { critical: 'CRITICAL', high: 'HIGH', moderate: 'MODERATE' } as const;
+
+/** Core habits the report should only talk about if the user actually covered them. */
+function topicsNotDiscussed(a: LifestyleAssessment): string[] {
+  const p: LifestyleProfile = a.profile;
+  const covered = new Set(a.risks.map((r) => r.topic));
+  const topics: [string, boolean][] = [
+    ['sleep', p.sleepHours !== null || covered.has('sleep')],
+    ['water intake', p.waterLiters !== null || covered.has('water')],
+    [
+      'eating pattern',
+      p.eatingPattern !== null || p.mealsPerDay !== null || covered.has('eating') || covered.has('disordered_eating'),
+    ],
+    ['stress', p.stress !== null || covered.has('stress')],
+    ['skincare routine', p.skincare !== null],
+    ['sun protection', p.sunProtection !== null || covered.has('sun')],
+  ];
+  return topics.filter(([, known]) => !known).map(([name]) => name);
+}
+
+function buildReportBrief(metrics: SkinMetrics, a: ReportAssessment, transcript: string): string {
+  const readings = interpretSkin(metrics);
+  const phrasesAt = (level: string) =>
+    readings
+      .filter((r) => r.level === level)
+      .map((r) => r.phrase)
+      .join('; ') || 'none';
+  const risks = a.lifestyle.risks.length
+    ? a.lifestyle.risks
+        .map((r, i) => `${i + 1}. [${SEVERITY_TAGS[r.severity]}${r.seeDoctor ? ', see a doctor' : ''}] ${r.label}: ${r.detail}`)
+        .join('\n')
+    : 'Nothing worrying in their answers.';
+  const notDiscussed = topicsNotDiscussed(a.lifestyle);
+
+  return [
+    'CONSULTATION TRANSCRIPT',
+    transcript || '(no answers recorded)',
+    '',
+    'ASSESSMENT (computed by the app; follow it)',
+    `Overall verdict: ${a.verdict.label}`,
+    `Skin scan overall: ${{ good: 'good', fair: 'fair', concern: 'needs care' }[healthLevel(a.skinHealth)]}`,
+    'Must address (most serious first):',
+    risks,
+    'Skin scan (camera estimates):',
+    `- Concerns: ${phrasesAt('concern')}`,
+    `- Fair: ${phrasesAt('fair')}`,
+    `- Looking good: ${phrasesAt('good')}`,
+    ...(notDiscussed.length ? [`Not discussed, so don't guess: ${notDiscussed.join(', ')}`] : []),
+    ...(a.incomplete
+      ? [
+          "Some of the user's answers could not be read: do not describe their habits as healthy, and suggest they repeat the consultation.",
+        ]
+      : []),
+  ].join('\n');
+}
+
+function readApiKeyFromEnv(): string {
+  try {
+    return import.meta.env.VITE_GROQ_API_KEY || '';
+  } catch {
+    return ''; // outside Vite (e.g. unit tests)
+  }
 }
 
 // ── API Client ───────────────────────────────────────────────────────────────
@@ -163,9 +224,12 @@ export class GroqService {
   private apiKey: string;
   private conversationHistory: ChatMessage[] = [];
   private systemPrompt: string = '';
+  private metrics: SkinMetrics | null = null;
+  private transcript: TranscriptEntry[] = [];
+  private safetyFlags: SafetyFlag[] = [];
 
-  constructor() {
-    this.apiKey = import.meta.env.VITE_GROQ_API_KEY || '';
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey ?? readApiKeyFromEnv();
   }
 
   isConfigured(): boolean {
@@ -204,21 +268,27 @@ export class GroqService {
   private mockStep: number = 0;
 
   initConversation(metrics: SkinMetrics): void {
+    this.metrics = metrics;
     this.mockMetrics = metrics;
     this.mockStep = 0;
+    this.transcript = [];
+    this.safetyFlags = [];
     this.systemPrompt = buildSystemPrompt(metrics);
     this.conversationHistory = [{ role: 'system', content: this.systemPrompt }];
+  }
+
+  /** Worrying statements the user has made so far (detected in code, not by the LLM). */
+  getSafetyFlags(): SafetyFlag[] {
+    return [...this.safetyFlags];
   }
 
   private cachedActiveModels: string[] | null = null;
 
   /**
-   * Fetch active chat models dynamically from Groq's /models endpoint.
+   * The pinned models that Groq currently serves, strongest first.
    */
   async fetchAvailableChatModels(): Promise<string[]> {
-    if (this.cachedActiveModels && this.cachedActiveModels.length > 0) {
-      return this.cachedActiveModels;
-    }
+    if (this.cachedActiveModels) return this.cachedActiveModels;
 
     try {
       const res = await fetch(GROQ_MODELS_URL, {
@@ -226,49 +296,98 @@ export class GroqService {
           Authorization: `Bearer ${this.apiKey}`,
         },
       });
-
       if (res.ok) {
         const data = await res.json();
-        if (data && Array.isArray(data.data)) {
-          // Filter out whisper, tts, embedding, and guard models
-          const chatModels = data.data
-            .map((m: any) => m.id)
-            .filter(
-              (id: string) =>
-                typeof id === 'string' &&
-                !id.includes('whisper') &&
-                !id.includes('tts') &&
-                !id.includes('embed') &&
-                !id.includes('guard')
-            );
-
-          if (chatModels.length > 0) {
-            // Prioritize top recommended models
-            const prioritized = CANDIDATE_MODELS.filter((m) => chatModels.includes(m));
-            const others = chatModels.filter((m: string) => !CANDIDATE_MODELS.includes(m));
-            this.cachedActiveModels = [...prioritized, ...others];
-            console.log('Dynamic Groq Active Models Loaded:', this.cachedActiveModels);
-            return this.cachedActiveModels;
-          }
+        const served = new Set((data?.data ?? []).map((m: any) => m.id));
+        const available = CHAT_MODELS.filter((m) => served.has(m));
+        if (available.length > 0) {
+          this.cachedActiveModels = available;
+          return available;
         }
       }
     } catch (e) {
-      console.warn('Could not query Groq /models dynamically, using fallback candidates list:', e);
+      console.warn('Could not query Groq /models, trying the pinned models directly:', e);
     }
 
-    this.cachedActiveModels = CANDIDATE_MODELS;
-    return CANDIDATE_MODELS;
+    // Let the chat request itself report what's wrong.
+    this.cachedActiveModels = CHAT_MODELS;
+    return CHAT_MODELS;
   }
 
   /**
-   * Send a message and get a streaming response.
+   * Sends a request to the first pinned model that responds and returns the
+   * text of its reply. Not streamed: Groq's JSON mode doesn't support streaming,
+   * and nothing here shows partial replies.
+   */
+  private async complete(messages: ChatMessage[], temperature: number): Promise<string> {
+    let lastErrorText = '';
+
+    for (const model of await this.fetchAvailableChatModels()) {
+      try {
+        const res = await fetch(GROQ_API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature,
+            max_tokens: 4096,
+            response_format: { type: 'json_object' },
+            stream: false,
+          }),
+        });
+
+        if (!res.ok) {
+          lastErrorText = await res.text();
+          console.warn(`Groq model '${model}' failed (${res.status}): ${lastErrorText}. Trying the next pinned model...`);
+          continue;
+        }
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content ?? '';
+      } catch (err: any) {
+        lastErrorText = err.message || String(err);
+        console.warn(`Network/Request error on model '${model}':`, err);
+      }
+    }
+
+    throw new Error(`Groq API error: ${lastErrorText || 'All pinned models failed'}`);
+  }
+
+  /**
+   * Adds the user's words to the conversation and transcript. Worrying
+   * statements are caught in code, and the model is told to follow up on them.
+   * Returns a function that undoes the turn (used when the request fails).
+   */
+  private recordUserTurn(text: string): () => void {
+    const lengths = [this.conversationHistory.length, this.transcript.length, this.safetyFlags.length];
+    this.conversationHistory.push({ role: 'user', content: text });
+    this.transcript.push({ speaker: 'user', text });
+
+    const fresh = detectSafetyFlags(text).filter((f) => !this.safetyFlags.some((k) => k.id === f.id));
+    if (fresh.length > 0) {
+      this.safetyFlags.push(...fresh);
+      this.conversationHistory.push({ role: 'system', content: followUpNote(fresh) });
+    }
+
+    return () => {
+      this.conversationHistory.length = lengths[0];
+      this.transcript.length = lengths[1];
+      this.safetyFlags.length = lengths[2];
+    };
+  }
+
+  /**
+   * Send a message and get the advisor's next question.
    * @param userMessage  The user's reply (or empty string for the opening question)
-   * @param onChunk      Called with each text chunk as it arrives
-   * @returns            The full accumulated response text
+   * @param onChunk      Called with the reply text once it arrives
    */
   async chat(userMessage: string, onChunk?: (chunk: string) => void): Promise<LLMQuestion> {
+    let undoTurn = () => {};
     if (userMessage) {
-      this.conversationHistory.push({ role: 'user', content: userMessage });
+      undoTurn = this.recordUserTurn(userMessage);
     } else {
       // Opening message — prompt the LLM to start
       this.conversationHistory.push({
@@ -281,85 +400,24 @@ export class GroqService {
       return this.generateMockStepResponse(userMessage, onChunk);
     }
 
-    const availableModels = await this.fetchAvailableChatModels();
-    let response: Response | null = null;
-    let lastErrorText = '';
+    let raw: string;
+    try {
+      raw = await this.complete(this.conversationHistory, CHAT_TEMPERATURE);
+    } catch (err) {
+      undoTurn(); // so sending the same answer again doesn't duplicate it
+      throw err;
+    }
+    const parsed = this.parseResponse(raw);
 
-    for (const modelCandidate of availableModels) {
-      try {
-        const res = await fetch(GROQ_API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: modelCandidate,
-            messages: this.conversationHistory,
-            temperature: 0.7,
-            max_tokens: 4096,
-            stream: true,
-          }),
-        });
-
-        if (res.ok) {
-          response = res;
-          break;
-        }
-
-        const errText = await res.text();
-        lastErrorText = errText;
-        console.warn(
-          `Groq model '${modelCandidate}' failed (${res.status}): ${errText}. Trying next candidate model...`
-        );
-      } catch (err: any) {
-        lastErrorText = err.message || String(err);
-        console.warn(`Network/Request error on model '${modelCandidate}':`, err);
-      }
+    if (parsed.isReport) {
+      // Reports are only ever written from the app's assessment, never ad hoc mid-conversation.
+      return this.generateReport(onChunk);
     }
 
-    if (!response || !response.ok) {
-      throw new Error(`Groq API error: ${lastErrorText || 'All candidate models failed'}`);
-    }
-
-    // ── Stream SSE ───────────────────────────────────────────────────────────
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let accumulated = '';
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') continue;
-
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed.choices?.[0]?.delta?.content;
-          if (delta) {
-            accumulated += delta;
-            onChunk?.(delta);
-          }
-        } catch {
-          // Skip malformed JSON chunks
-        }
-      }
-    }
-
-    // Save assistant response to history
-    this.conversationHistory.push({ role: 'assistant', content: accumulated });
-
-    // Parse the structured response
-    return this.parseResponse(accumulated);
+    this.conversationHistory.push({ role: 'assistant', content: raw });
+    this.transcript.push({ speaker: 'advisor', text: parsed.message });
+    onChunk?.(parsed.message);
+    return parsed;
   }
 
   private async generateMockStepResponse(userMessage: string, onChunk?: (chunk: string) => void): Promise<LLMQuestion> {
@@ -382,43 +440,59 @@ export class GroqService {
       acne: 5,
       uvDamage: 20,
       elasticity: 75,
+      pigmentation: 15,
     };
 
     if (userMessage.toLowerCase().includes('report') || userMessage === 'generate_report' || this.mockStep >= 4) {
-      const reportMarkdown = `
-# 🏥 Overall Health Summary
-Based on your biometric skin scan, your overall **Skin Health Score is ${m.health.toFixed(0)}/100**. Your skin exhibits moderate physiological equilibrium with localized telemetry markers indicating areas for targeted hydration and barrier restoration.
+      const healthDesc = m.health >= 70 ? 'doing quite well overall' : m.health >= 50 ? 'in a decent place with some areas to work on' : 'showing signs that need a little extra care';
+      const hydrationDesc = m.hydration >= 60 ? 'reasonably well-hydrated' : m.hydration >= 40 ? 'a bit on the dry side' : 'noticeably lacking moisture';
+      const textureDesc = m.texture >= 65 ? 'smooth and even' : 'showing some uneven patches';
 
-# 🔬 Skin Analysis Breakdown
-- **Hydration Level**: ${m.hydration.toFixed(0)}/100 ${m.hydration < 50 ? '⚠️ (Needs attention)' : '✅ (Optimal)'}
-- **Melanin & Pigmentation Index**: ${m.melanin.toFixed(1)}
-- **Redness / Erythema Index**: ${m.erythema.toFixed(1)} ${m.erythema > 100 ? '⚠️ (Elevated vascular sensitivity)' : '✅ (Normal)'}
-- **Specular Glare / Oiliness**: ${m.oiliness.toFixed(1)}%
-- **Texture & Elasticity**: ${m.texture.toFixed(0)}/100
+      const reportMarkdown = `## How Your Skin is Doing
 
-# 🧬 Lifestyle Assessment
-Your responses indicate consistent activity patterns. Restoring optimal hydration and improving restorative sleep cycles will directly accelerate dermal barrier recovery.
+First off, thanks for taking the time to go through this with me! Based on everything I've seen from your scan and what you've shared, your skin is ${healthDesc}. There's a nice foundation to work with here, and with a few small adjustments, I think you'll notice a real difference in how your skin looks and feels.
 
-# ⚠️ Risk Factors Identified
-- Micro-vascular reactivity under stress or environmental changes.
-- Trans-epidermal water loss during extended screen time or dry air exposure.
+## What I Noticed
 
-# 🌿 Ayurvedic Recommendations (Dosha Alignment)
-- **Pitta Balancing**: Incorporate cooling botanicals such as Aloe Vera, Rosewater, and Gotu Kola.
-- **Vata Support**: Warm sesame oil abhyanga massage prior to baths to lock in lipid moisture.
+Looking at your scan results, a few things stood out to me. Your skin's hydration is ${hydrationDesc} — ${m.hydration < 50 ? "this is probably the most important thing we can address, because when your skin doesn't have enough moisture, everything else suffers too" : "which is great, but there's always room to keep it topped up"}. Your skin texture is ${textureDesc}, and ${m.oiliness > 12 ? "I noticed your oil levels are a bit elevated, especially around the forehead and nose area — that's completely normal, but managing it will help prevent breakouts" : "your oil balance looks healthy, which is a really good sign"}.
 
-# 💊 Modern Health Tips
-- Apply a hyaluronic acid-based serum on damp skin twice daily.
-- Use a broad-spectrum SPF 50+ mineral sunscreen to shield against UV and blue light exposure.
+${m.darkCircles > 20 ? "I also noticed some shadows under your eyes. This usually comes down to a combination of sleep quality and hydration, and it's one of the easiest things to improve." : ""}
 
-# 📋 Personalized Daily Routine
-- **Morning**: Gentle cleanser → Vitamin C / Antioxidant serum → Barrier cream → SPF 50+.
-- **Evening**: Double cleanse → Niacinamide serum → Hydrating night moisturizer.
+## Your Lifestyle and How It Connects
 
-# 🎯 Priority Actions — Top 3 This Week
-1. Increase water intake to at least 2.5 Liters daily.
-2. Maintain consistent 7-8 hours of nighttime rest.
-3. Apply cooling topical moisturizer following multi-angle camera scans.
+From what you've told me about your daily routine, I can see how some of your habits are directly showing up on your skin. ${m.hydration < 50 ? "The dryness I'm seeing lines up with what you mentioned about your water intake — your skin is essentially asking for more hydration from the inside out." : "Your habits seem to be supporting your skin pretty well."} Sleep is another big one — it's when your skin does most of its repair work, so ${m.fatigue < 0.25 ? "the tiredness I'm picking up from your scan suggests your skin isn't getting quite enough recovery time" : "it looks like you're getting decent rest, which your skin is grateful for"}.
+
+## A Few Things to Keep an Eye On
+
+${m.erythema > 130 ? "Your skin is showing some sensitivity and redness, which can flare up with stress, spicy foods, or harsh skincare products. Being gentle with your skin — both in what you put on it and what you eat — will help calm things down." : "Nothing major to worry about here."}
+
+${m.uvDamage > 25 ? "I'm also seeing some early signs of sun exposure. Sunscreen really is your best friend here, even on cloudy days. Think of it as an investment in how your skin will look five years from now." : ""}
+
+## What I'd Suggest
+
+Here's where the good stuff comes in. I like to blend the best of modern skincare with some tried-and-true Ayurvedic wisdom:
+
+**For hydration**, try applying a lightweight hyaluronic acid serum on slightly damp skin — it works like a moisture magnet. On the Ayurvedic side, warm sesame oil applied before your shower (called abhyanga) is wonderful for locking in moisture and calming your nervous system at the same time.
+
+${m.oiliness > 12 ? "**For oil balance**, niacinamide is your go-to ingredient — it helps regulate sebum without stripping your skin. And try cutting back on refined sugar for a couple weeks; you might be surprised how much it helps." : ""}
+
+**For that natural glow**, cooling botanicals like aloe vera gel and rosewater make a lovely toner. Gotu kola (Centella) is another gem — it supports collagen and helps with overall skin recovery.
+
+## Your Morning and Evening Routine
+
+**Morning**: Start with a gentle cleanser, follow up with a vitamin C serum for protection and brightness, then your moisturizer, and always finish with SPF. Keep it simple.
+
+**Evening**: Double cleanse to remove the day, apply your niacinamide or treatment serum, and finish with a rich night moisturizer. This is when your skin heals, so give it good ingredients to work with.
+
+## This Week's Focus
+
+Let's keep it manageable — just three things to focus on this week:
+
+- Drink a little more water than you usually do. Even one extra glass makes a difference.
+- Be consistent with your evening skincare, even when you're tired. Your future skin will thank you.
+- Try the sesame oil abhyanga before your shower, even just twice this week. It's deeply nourishing and surprisingly relaxing.
+
+You're already on the right track by paying attention to your skin and taking this assessment. Small, consistent steps will get you where you want to be. Take care of yourself! 🌿
 `;
 
       if (onChunk) {
@@ -490,13 +564,76 @@ Your responses indicate consistent activity patterns. Restoring optimal hydratio
   }
 
   /**
-   * Request the final report generation.
+   * Writes the final report in two steps: extract the user's answers as facts,
+   * score them in code, then have the model write the letter from that assessment.
    */
-  async generateReport(onChunk?: (chunk: string) => void): Promise<LLMQuestion> {
-    return this.chat(
-      "I'm ready! Please generate my comprehensive health report now based on everything we've discussed and my skin scan data.",
-      onChunk
-    );
+  /**
+   * @param userMessage  Anything the user typed along with the request ("generate my
+   *                     report, also I don't eat"), so it counts like any other answer.
+   */
+  async generateReport(onChunk?: (chunk: string) => void, userMessage?: string): Promise<LLMQuestion> {
+    if (!this.isConfigured() || !this.metrics) {
+      return this.chat(
+        "I'm ready! Please generate my comprehensive health report now based on everything we've discussed and my skin scan data.",
+        onChunk
+      );
+    }
+    const undoTurn = userMessage && userMessage !== 'generate_report' ? this.recordUserTurn(userMessage) : () => {};
+
+    try {
+      const extraction = await this.extractLifestyle();
+      const lifestyle = assessLifestyle(extraction.profile, this.safetyFlags);
+      const incomplete = !extraction.ok;
+      const assessment: ReportAssessment = {
+        verdict: overallVerdict(this.metrics.health, lifestyle.level, { incomplete }),
+        lifestyle,
+        skinHealth: this.metrics.health,
+        incomplete,
+      };
+
+      const raw = await this.complete(
+        [
+          { role: 'system', content: REPORT_SYSTEM_PROMPT },
+          { role: 'user', content: buildReportBrief(this.metrics, assessment, formatTranscript(this.transcript)) },
+        ],
+        REPORT_TEMPERATURE
+      );
+      const message = this.parseResponse(raw).message;
+      onChunk?.(message);
+      return { message, isReport: true, assessment };
+    } catch (err) {
+      undoTurn(); // so asking again doesn't duplicate what they typed
+      throw err;
+    }
+  }
+
+  /**
+   * Step 1 of the report: the user's answers as structured, validated facts.
+   * Tried twice; `ok` is false when no usable answer came back (no JSON, or
+   * none of the expected answers), so the report is never rated "good" blind.
+   */
+  private async extractLifestyle(): Promise<{ profile: LifestyleProfile; ok: boolean }> {
+    const transcript = formatTranscript(this.transcript);
+    if (!transcript) return { profile: emptyProfile(), ok: true };
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const raw = await this.complete(
+          [
+            { role: 'system', content: EXTRACTION_PROMPT },
+            { role: 'user', content: transcript },
+          ],
+          0
+        );
+        const [facts] = this.extractJsonObjects(this.stripThinkingBlocks(raw));
+        const profile = parseLifestyleProfile(facts);
+        if (Object.values(profile).some((v) => v !== null)) return { profile, ok: true };
+        console.warn(`Lifestyle extraction attempt ${attempt} returned no usable answers.`);
+      } catch (err) {
+        console.warn(`Lifestyle extraction attempt ${attempt} failed:`, err);
+      }
+    }
+    return { profile: emptyProfile(), ok: false };
   }
 
   private stripThinkingBlocks(text: string): string {
@@ -513,42 +650,127 @@ Your responses indicate consistent activity patterns. Restoring optimal hydratio
     return cleaned.trim();
   }
 
+  /**
+   * Extract all valid JSON objects from a text string, including concatenated JSON blocks.
+   */
+  private extractJsonObjects(str: string): any[] {
+    const results: any[] = [];
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let startIdx = -1;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '{') {
+          if (depth === 0) {
+            startIdx = i;
+          }
+          depth++;
+        } else if (char === '}') {
+          depth--;
+          if (depth === 0 && startIdx !== -1) {
+            const jsonSubstring = str.substring(startIdx, i + 1);
+            try {
+              const parsed = JSON.parse(jsonSubstring);
+              if (parsed && typeof parsed === 'object') {
+                results.push(parsed);
+              }
+            } catch {
+              // Ignore invalid sub-blocks
+            }
+            startIdx = -1;
+          }
+        }
+      }
+    }
+    return results;
+  }
+
   private parseResponse(raw: string): LLMQuestion {
-    let cleanedRaw = this.stripThinkingBlocks(raw);
+    let cleanedRaw = this.stripThinkingBlocks(raw).trim();
     let msgText = cleanedRaw;
     let options: OptionCard[] | undefined = undefined;
     let isReport = false;
 
-    try {
-      let jsonStr = cleanedRaw.trim();
+    // 1. Remove markdown code fences if present
+    if (cleanedRaw.startsWith('```json')) {
+      cleanedRaw = cleanedRaw.slice(7);
+    } else if (cleanedRaw.startsWith('```')) {
+      cleanedRaw = cleanedRaw.slice(3);
+    }
+    if (cleanedRaw.endsWith('```')) {
+      cleanedRaw = cleanedRaw.slice(0, -3);
+    }
+    cleanedRaw = cleanedRaw.trim();
 
-      // Remove markdown code fences if present
-      if (jsonStr.startsWith('```json')) {
-        jsonStr = jsonStr.slice(7);
-      } else if (jsonStr.startsWith('```')) {
-        jsonStr = jsonStr.slice(3);
-      }
-      if (jsonStr.endsWith('```')) {
-        jsonStr = jsonStr.slice(0, -3);
-      }
-      jsonStr = jsonStr.trim();
+    // 2. Extract structured JSON objects using balanced brace scanner
+    const extractedObjects = this.extractJsonObjects(cleanedRaw);
 
-      // If there is surrounding text outside the JSON object, extract between first { and last }
-      const firstBrace = jsonStr.indexOf('{');
-      const lastBrace = jsonStr.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+    if (extractedObjects.length > 0) {
+      // If multiple JSON objects were concatenated, take the most recent valid one containing 'message'
+      const validObj = extractedObjects.reverse().find((o) => o.message || o.report || o.options) || extractedObjects[0];
+      msgText = validObj.message || validObj.report || validObj.content || '';
+      options = Array.isArray(validObj.options) ? validObj.options : undefined;
+      isReport = !!validObj.isReport;
+    } else {
+      // 3. Regex Fallback: If standard JSON parsing failed, extract "message" and "options" via regex
+      const msgMatch = cleanedRaw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (msgMatch && msgMatch[1]) {
+        try {
+          msgText = JSON.parse(`"${msgMatch[1]}"`);
+        } catch {
+          msgText = msgMatch[1];
+        }
       }
 
-      const parsed = JSON.parse(jsonStr);
-      msgText = parsed.message || parsed.report || parsed.content || cleanedRaw;
-      options = parsed.options || undefined;
-      isReport = !!parsed.isReport;
-    } catch {
-      msgText = cleanedRaw;
+      const optMatch = cleanedRaw.match(/"options"\s*:\s*(\[[^\]]+\])/);
+      if (optMatch && optMatch[1]) {
+        try {
+          const parsedOpts = JSON.parse(optMatch[1]);
+          if (Array.isArray(parsedOpts)) {
+            options = parsedOpts;
+          }
+        } catch {}
+      }
+
+      if (cleanedRaw.includes('"isReport": true') || cleanedRaw.includes('"isReport":true')) {
+        isReport = true;
+      }
     }
 
-    // Clean any residual JSON or markdown code wrapping if the raw output was direct markdown
+    // 4. Clean any residual JSON tags, braces, or quotes if msgText still looks like raw JSON
+    if (msgText.trim().startsWith('{') && msgText.includes('"message"')) {
+      const innerMatch = msgText.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (innerMatch && innerMatch[1]) {
+        try {
+          msgText = JSON.parse(`"${innerMatch[1]}"`);
+        } catch {
+          msgText = innerMatch[1];
+        }
+      } else {
+        msgText = msgText.replace(/\{|\}|"message":|"options":|"questionNumber":\s*\d+,?|"totalExpected":\s*\d+,?|"isReport":\s*(true|false),?/g, '').trim();
+      }
+    }
+
+    // 5. Clean any residual markdown fences if present in message text
     if (msgText.startsWith('```markdown')) {
       msgText = msgText.slice(11);
     } else if (msgText.startsWith('```md')) {
@@ -562,25 +784,26 @@ Your responses indicate consistent activity patterns. Restoring optimal hydratio
 
     msgText = this.stripThinkingBlocks(msgText);
 
-    // Auto-detect report if headers are present even if isReport flag was omitted in JSON
+    // 6. Auto-detect report if standard report sections are present
     const reportKeywords = [
-      'Overall Health Summary',
-      'Skin Analysis Breakdown',
-      'Ayurvedic Recommendations',
-      'Risk Factors Identified',
-      'Lifestyle Assessment',
-      'Personalized Daily Routine',
-      'Priority Actions',
-      'Modern Health Tips',
+      'The Most Important Thing',
+      'Your Habits and Your Health',
+      'How Your Skin is Doing',
+      'What I Noticed',
+      'What I\'d Suggest',
+      'Your Lifestyle and How It Connects',
+      'A Few Things to Keep an Eye On',
+      'Your Morning and Evening Routine',
+      'This Week\'s Focus',
+      'What I\'d Recommend',
     ];
 
     const hasReportHeader = reportKeywords.some((kw) => msgText.includes(kw) || raw.includes(kw));
-
     if (hasReportHeader) {
       isReport = true;
     }
 
-    // Fallback if msgText is still empty or whitespace
+    // 7. Ultimate fallback
     if (!msgText) {
       msgText =
         "I have collected your skin scan data and lifestyle responses! I'm ready to generate your comprehensive health report.";

@@ -148,20 +148,6 @@ export abstract class BaseWorker<T> {
     return fileset;
   }
 
-  protected async getAudioFileset() {
-    const wasmPath = this.getWasmPath();
-    const fileset = await FilesetResolver.forAudioTasks(wasmPath, true);
-    fileset.wasmLoaderPath = `${fileset.wasmLoaderPath}?cb=${Date.now()}`; // Force reload
-    return fileset;
-  }
-
-  protected async getTextFileset() {
-    const wasmPath = this.getWasmPath();
-    const fileset = await FilesetResolver.forTextTasks(wasmPath, true);
-    fileset.wasmLoaderPath = `${fileset.wasmLoaderPath}?cb=${Date.now()}`; // Force reload
-    return fileset;
-  }
-
   protected updateOptions(_?: any): Promise<void> {
     return Promise.resolve();
   }

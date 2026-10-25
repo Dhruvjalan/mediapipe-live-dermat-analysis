@@ -16,20 +16,28 @@
 
 import { FaceLandmarkerResult, DrawingUtils, FaceLandmarker } from '@mediapipe/tasks-vision';
 import { BaseVisionTask } from '../components/base-vision-task';
-import { DermatologyEngine } from '../tasks/dermatology-engine';
-import { detectLocation, getCachedLocation } from '../services/location-service';
 import {
-  detectClimateFromLocation,
-  getVariableMetricsForZone,
-  type ClimateZone,
-  type VariableMetricMeta,
-  VARIABLE_METRIC_REGISTRY,
-} from '../services/climate-zone-service';
+  aggregateScan,
+  analyzeFrame,
+  deriveCompositeMetrics,
+  estimatePulse,
+  faceRegions,
+  PulseTracker,
+  skinColour,
+  type FrameMeasures,
+  type LightingInfo,
+} from './dermatology-engine';
+import {
+  healthLevel,
+  interpretSkin,
+  skinHealthScore,
+  SKIN_METRICS_VERSION,
+  type SkinMetrics,
+} from '../services/skin-interpretation';
+import { saveScanToHistory } from '../services/history-store';
 
 // @ts-ignore
 import template from '../templates/face-landmarker.html?raw';
-// @ts-ignore
-declare var cv: any;
 
 // Sequence capture stages for multi-angle temporal stabilization
 type ScanStage = 'IDLE' | 'CENTER' | 'RIGHT' | 'LEFT' | 'UP' | 'DOWN' | 'COMPLETED';
@@ -38,18 +46,15 @@ type ScanStage = 'IDLE' | 'CENTER' | 'RIGHT' | 'LEFT' | 'UP' | 'DOWN' | 'COMPLET
 const SCAN_CONFIG = {
   FRAMES_PER_STAGE: 15, // Total collected raw frames per stage
   MIN_GOOD_FRAMES_RESTART: 4, // If good frames <= this threshold, entire scan restarts
-  MIN_GOOD_FRAMES_WARNING: 9, // If good frames fall between restart and this, scale deformable attention
   FRAME_QUALITY_THRESHOLD: 65.0, // Minimum quality score (0-100) to classify a frame as "good"
+  TOP_FRAMES_PER_STAGE: 3, // Best frames per pose that go into the final result
+  // How long the centre pose waits for a pulse before moving on. A clear pulse locks after
+  // ~11-13 s of still video; a faint one (dim or flickering light) can need up to ~20 s.
+  PULSE_MAX_WAIT_MS: 20000,
 };
 
-interface ScoredFrame {
-  metrics: any;
-  quality: string;
-  stage: ScanStage;
-  timestamp: number;
-}
-
-const MIN_EPOCH = 50;
+/** The frozen result of a completed scan: what the table shows and what the chat receives. */
+type ScanResult = SkinMetrics & { lighting: LightingInfo };
 
 class FaceLandmarkerTask extends BaseVisionTask {
   private drawingUtils: DrawingUtils | undefined;
@@ -59,19 +64,14 @@ class FaceLandmarkerTask extends BaseVisionTask {
   private minFacePresenceConfidence = 0.5;
   private minTrackingConfidence = 0.5;
 
-  // ── Climate Zone State ──
-  private currentClimateZone: ClimateZone = 'UNKNOWN';
-  private activeVariableMetrics: VariableMetricMeta[] = [];
-  private variableMetricsRendered = false;
-
   // ── Multi-Angle Sequence Capture & Scoring Buffers ──
   private currentStage: ScanStage = 'IDLE';
   private stageFramesCount: number = 0;
+  private poseMatched = false; // whether the latest frame matched the current stage's pose
   private scanRestartAttempts = 0;
-  private epoch: number = 0; // Incremented each time a new scan is completed
 
-  // Stores categorized/scored frames per pose stage for ranking & filtering
-  private stageFrameBuckets: Record<string, ScoredFrame[]> = {
+  // Stores measured frames per pose stage for ranking & filtering
+  private stageFrameBuckets: Record<string, FrameMeasures[]> = {
     CENTER: [],
     RIGHT: [],
     LEFT: [],
@@ -79,13 +79,14 @@ class FaceLandmarkerTask extends BaseVisionTask {
     DOWN: [],
   };
 
-  private aggregatedMetricsBuffer: any[] = [];
+  // ── Pulse (camera PPG) ──
+  private pulse = new PulseTracker();
+  private centerStartedAt = 0;
+
+  private scanResult: ScanResult | null = null;
 
   protected override onInitializeUI() {
     console.log('Initializing FaceLandmarkerTask UI with Ranked Temporal Sequence Capture & Physics Engine');
-
-    // ── Location Detection ──
-    this.initLocationDetection();
 
     const startScanBtn = document.getElementById('start-sequence-scan-btn');
     if (startScanBtn) {
@@ -144,158 +145,41 @@ class FaceLandmarkerTask extends BaseVisionTask {
       reportBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (this.latestResults) {
-          const metricsForChat = {
-            health: this.latestResults.health,
-            glow: this.latestResults.glow,
-            hydration: this.latestResults.hydration,
-            melanin: this.latestResults.melanin,
-            erythema: this.latestResults.erythema,
-            oiliness: this.latestResults.oiliness,
-            pores: this.latestResults.pores,
-            texture: this.latestResults.texture,
-            wrinkles: this.latestResults.wrinkles,
-            fatigue: this.latestResults.fatigue,
-            darkCircles: this.latestResults.darkCircles,
-            heartRate: this.latestResults.heartRate,
-            perfusion: this.latestResults.perfusion,
-            yellowness: this.latestResults.yellowness,
-            imageQuality: this.latestResults.imageQuality,
-            acne: this.latestResults.acne,
-            uvDamage: this.latestResults.uvDamage,
-            elasticity: this.latestResults.elasticity,
-            climateZone: this.currentClimateZone,
-          };
-          sessionStorage.setItem('ayurgenx-skin-metrics', JSON.stringify(metricsForChat));
-        }
-        window.location.hash = '#/health/health_chat';
+        this.saveMetricsAndProceed();
       });
     }
   }
 
   /**
-   * Detect user's geographic location and update the dashboard badge.
+   * Save the completed scan (exactly what the table shows) to session storage.
    */
-  private async initLocationDetection(): Promise<void> {
-    const textEl = document.getElementById('location-text');
-    const dotEl = document.getElementById('location-dot');
-    const badgeEl = document.getElementById('location-badge');
-
-    // Render default variable metrics (all) until location is known
-    this.renderVariableMetrics('UNKNOWN');
-
-    if (!textEl) return;
-
-    try {
-      const loc = await detectLocation();
-      if (loc) {
-        textEl.textContent = loc.displayName;
-        if (dotEl) {
-          dotEl.style.background = '#4caf50';
-          dotEl.style.animation = 'none';
-        }
-        if (badgeEl) {
-          badgeEl.style.background = 'linear-gradient(135deg, #e8f5e9, #f1f8e9)';
-          badgeEl.style.borderColor = '#a5d6a7';
-        }
-        // Store for health-chat to pick up
-        sessionStorage.setItem('ayurgenx-location', JSON.stringify(loc));
-
-        // Determine climate zone from detected state
-        const stateStr = loc.state || loc.city || '';
-        const { zone, info, metrics } = detectClimateFromLocation(stateStr);
-        this.currentClimateZone = zone;
-        this.renderVariableMetrics(zone);
-        this.updateClimateZoneUI(zone, info);
-      } else {
-        textEl.textContent = 'Location unavailable';
-        if (dotEl) {
-          dotEl.style.background = '#bdbdbd';
-          dotEl.style.animation = 'none';
-        }
-        // Fallback: show all variable metrics
-        this.renderVariableMetrics('UNKNOWN');
-        this.updateClimateZoneUI('UNKNOWN', null);
-      }
-    } catch {
-      textEl.textContent = 'Location unavailable';
-      if (dotEl) {
-        dotEl.style.background = '#bdbdbd';
-        dotEl.style.animation = 'none';
-      }
-      this.renderVariableMetrics('UNKNOWN');
-      this.updateClimateZoneUI('UNKNOWN', null);
-    }
+  public saveMetricsToSession(): void {
+    if (!this.scanResult) return;
+    const { lighting, ...metrics } = this.scanResult;
+    sessionStorage.setItem('ayurgenx-skin-metrics', JSON.stringify(metrics));
   }
 
   /**
-   * Render the variable metric table rows based on the detected climate zone.
-   * If zone is UNKNOWN, all variable metrics are shown.
+   * Save analyzed metrics to session storage and navigate directly to AI questions consultation.
    */
-  private renderVariableMetrics(zone: ClimateZone) {
-    const tbody = document.getElementById('variable-metrics-tbody');
-    if (!tbody) return;
-
-    this.activeVariableMetrics = getVariableMetricsForZone(zone);
-    tbody.innerHTML = '';
-
-    for (const metric of this.activeVariableMetrics) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>
-          <div class="metric-label">
-            <span class="icon">${metric.icon}</span>
-            <div>
-              <strong>${metric.label}</strong>
-              <small>${metric.subtitle}</small>
-            </div>
-          </div>
-        </td>
-        <td id="${metric.valId}" class="value-cell">--</td>
-        <td id="${metric.statId}" class="status-cell">--</td>
-      `;
-      tbody.appendChild(tr);
-    }
-    this.variableMetricsRendered = true;
-  }
-
-  /**
-   * Update climate zone badge and Ayurvedic focus area in the UI.
-   */
-  private updateClimateZoneUI(zone: ClimateZone, info: any) {
-    const subtitleEl = document.getElementById('climate-zone-subtitle');
-    const badgeEl = document.getElementById('climate-zone-badge');
-    const emojiEl = document.getElementById('climate-zone-emoji');
-    const nameEl = document.getElementById('climate-zone-name');
-    const descEl = document.getElementById('climate-zone-desc');
-    const ayurBadge = document.getElementById('ayurvedic-focus-badge');
-    const ayurText = document.getElementById('ayurvedic-focus-text');
-
-    if (zone === 'UNKNOWN' || !info) {
-      if (subtitleEl) subtitleEl.textContent = 'All metrics shown (location not in India)';
-      if (badgeEl) badgeEl.style.display = 'none';
-      if (ayurBadge) ayurBadge.style.display = 'none';
+  public saveMetricsAndProceed(): void {
+    if (!this.scanResult) {
+      this.updateInstructionBanner('Please complete the <b>Multi-Angle Scan</b> first, then continue.');
       return;
     }
-
-    if (subtitleEl) subtitleEl.textContent = `${info.label} Zone`;
-    if (badgeEl) {
-      badgeEl.style.display = 'flex';
-      if (emojiEl) emojiEl.textContent = info.emoji;
-      if (nameEl) nameEl.textContent = info.label;
-      if (descEl) descEl.textContent = info.description;
-    }
-    if (ayurBadge && ayurText) {
-      ayurBadge.style.display = 'flex';
-      ayurText.textContent = info.ayurvedicFocus;
-    }
+    this.saveMetricsToSession();
+    window.location.hash = '#/health/health_chat';
   }
 
   public startSequenceScan() {
     this.currentStage = 'CENTER';
     this.stageFrameBuckets = { CENTER: [], RIGHT: [], LEFT: [], UP: [], DOWN: [] };
-    this.aggregatedMetricsBuffer = [];
     this.stageFramesCount = 0;
+    this.scanResult = null;
+    // The pulse is read fresh from the still centre pose of this scan.
+    this.pulse = new PulseTracker();
+    this.centerStartedAt = 0; // set at the first measurable centre-pose frame
+    document.getElementById('get-report-btn')?.classList.remove('pulse-highlight');
     this.resetMarkersUI();
     this.updateInstructionBanner('Look straight ahead at the <b>Center</b>');
     this.highlightActiveMarker('CENTER');
@@ -363,15 +247,14 @@ class FaceLandmarkerTask extends BaseVisionTask {
       this.updateInstructionBanner('Tilt your head slightly <b>Down ⬇️</b>');
     } else if (this.currentStage === 'DOWN') {
       this.currentStage = 'COMPLETED';
-      this.updateInstructionBanner('✅ Scan complete! Evaluating frame rankings & running physics network...');
+      this.updateInstructionBanner('✅ Scan complete! Combining the best frames from each angle...');
       const ring = document.querySelector('.face-id-guide-ring') as HTMLElement;
       if (ring) ring.style.borderColor = '#34c759';
-      this.evaluateAndRunPhysicsPipeline();
+      this.evaluateScan();
     }
   }
 
   private checkPoseAndAdvanceSequence(landmarks: any[]) {
-    console.log('in checkPoseAndAdvanceSequence');
     if (this.currentStage === 'IDLE' || this.currentStage === 'COMPLETED') return;
 
     const nose = landmarks[1];
@@ -384,135 +267,138 @@ class FaceLandmarkerTask extends BaseVisionTask {
     const verticalDelta = nose.y - eyeMidY;
 
     let poseMatched = false;
-    console.log('Before switch');
-    console.log(
-      `Current Stage: ${this.currentStage}, Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`
-    );
     switch (this.currentStage) {
       case 'CENTER':
-        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (noseOffset >= 0.1 && noseOffset <= 0.9 && Math.abs(verticalDelta) < 0.1) poseMatched = true;
         break;
       case 'RIGHT':
-        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (noseOffset < 0.4) poseMatched = true;
         break;
       case 'LEFT':
-        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (noseOffset > 0.6) poseMatched = true;
         break;
       case 'UP':
-        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (verticalDelta < 0.03) poseMatched = true;
         break;
       case 'DOWN':
-        console.log(`Nose Offset: ${noseOffset.toFixed(2)}, Vertical Delta: ${verticalDelta.toFixed(2)}`);
         if (verticalDelta > 0.1) poseMatched = true;
         break;
     }
 
-    if (poseMatched) {
-      this.stageFramesCount++;
-      const progressPercent = Math.round((this.stageFramesCount / SCAN_CONFIG.FRAMES_PER_STAGE) * 100);
-      this.updateInstructionBanner(`Capturing **${this.currentStage}** pose... (${progressPercent}%)`);
+    this.poseMatched = poseMatched;
+    if (!poseMatched) return;
 
-      if (this.stageFramesCount >= SCAN_CONFIG.FRAMES_PER_STAGE) {
-        this.advanceToNextStage();
-      }
+    // A face that is too far away or partly out of frame can't be measured: say so, rather than count it.
+    if (!faceRegions(landmarks, this.video.videoWidth, this.video.videoHeight)) {
+      this.updateInstructionBanner('Move a little closer and keep your <b>whole face</b> in the frame');
+      return;
     }
+    // The pulse wait counts from here, so time before the camera or model was ready doesn't count.
+    if (this.currentStage === 'CENTER' && !this.centerStartedAt) this.centerStartedAt = performance.now();
+    this.stageFramesCount++;
+
+    if (this.stageFramesCount < SCAN_CONFIG.FRAMES_PER_STAGE) {
+      const progressPercent = Math.round((this.stageFramesCount / SCAN_CONFIG.FRAMES_PER_STAGE) * 100);
+      this.updateInstructionBanner(`Capturing <b>${this.currentStage}</b> pose... (${progressPercent}%)`);
+      return;
+    }
+
+    // The pulse can only be read while the head is still, so the centre pose
+    // waits (up to a limit) for a steady reading before the head turns.
+    if (this.currentStage === 'CENTER' && !this.pulse.locked) {
+      const waited = performance.now() - this.centerStartedAt;
+      if (waited < SCAN_CONFIG.PULSE_MAX_WAIT_MS) {
+        const secondsLeft = Math.ceil((SCAN_CONFIG.PULSE_MAX_WAIT_MS - waited) / 1000);
+        this.updateInstructionBanner(`Hold still, reading your pulse... (${secondsLeft}s)`);
+        return;
+      }
+      this.logPulseNotFound();
+    }
+    this.advanceToNextStage();
+  }
+
+  /** Why the pulse wasn't confirmed, for anyone checking the console. */
+  private logPulseNotFound() {
+    const samples = this.pulse.samples;
+    const seconds = samples.length > 1 ? (samples[samples.length - 1].t - samples[0].t) / 1000 : 0;
+    const rate = seconds > 0 ? (samples.length - 1) / seconds : 0;
+    const best = estimatePulse(samples, 0, -Infinity, -Infinity);
+    console.warn(
+      `Pulse not confirmed: ${samples.length} colour samples over ${seconds.toFixed(1)} s (${rate.toFixed(1)} per second), ` +
+        `best peak ${best.bpm} BPM, SNR ${best.snr.toFixed(1)} dB, prominence ${best.prominence.toFixed(1)} dB.`
+    );
   }
 
   /**
-   * Evaluates all captured frames across orientations: ranks them, filters quality,
-   * handles full restarts or deformable attention adjustments, and runs the deep physics engine.
+   * Ranks the captured frames by quality, restarts once if too few are usable,
+   * then combines the best frames of every pose (trimmed median) into the
+   * frozen scan result.
    */
-  private evaluateAndRunPhysicsPipeline() {
-    let totalGoodFramesAcrossScan = 0;
-    const evaluatedStages: ScanStage[] = ['CENTER', 'RIGHT', 'LEFT', 'UP', 'DOWN'];
-    const bestFramesPerOrientation: ScoredFrame[] = [];
+  private evaluateScan() {
+    const stageFrames = (['CENTER', 'RIGHT', 'LEFT', 'UP', 'DOWN'] as const).map((s) => this.stageFrameBuckets[s]);
+    const goodFrames = stageFrames.flat().filter((f) => f.quality >= SCAN_CONFIG.FRAME_QUALITY_THRESHOLD).length;
+    console.log(`Scan Evaluation - Good Frames Found: ${goodFrames}`);
 
-    for (const stage of evaluatedStages) {
-      const bucket = this.stageFrameBuckets[stage];
-      // Rank frames by quality score descending
-      bucket.sort((a, b) => parseInt(b.quality) - parseInt(a.quality));
-
-      const goodFramesInStage = bucket.filter((f) => parseInt(f.quality) >= SCAN_CONFIG.FRAME_QUALITY_THRESHOLD);
-      totalGoodFramesAcrossScan += goodFramesInStage.length;
-
-      // Select top frames for this orientation (up to top 2 per orientation to make total 10 best)
-      const topStageFrames = bucket.slice(0, 2);
-      bestFramesPerOrientation.push(...topStageFrames);
-    }
-
-    console.log(`Scan Evaluation - Total Good Frames Found: ${totalGoodFramesAcrossScan}`);
-
-    // Rule 1: If good frames for any/all orientations are critically low (<= 4), restart the whole process
-    if (totalGoodFramesAcrossScan <= SCAN_CONFIG.MIN_GOOD_FRAMES_RESTART && this.scanRestartAttempts < 1) {
+    // If good frames are critically low, restart the whole process (once)
+    if (goodFrames <= SCAN_CONFIG.MIN_GOOD_FRAMES_RESTART && this.scanRestartAttempts < 1) {
       console.warn('Too many substandard frames detected. Restarting full sequence scan.');
-      this.updateInstructionBanner('Low lighting or erratic motion detected. **Restarting Scan...**');
+      this.updateInstructionBanner('Low lighting or erratic motion detected. <b>Restarting Scan...</b>');
       setTimeout(() => this.startSequenceScan(), 2000);
       this.scanRestartAttempts++;
       return;
     }
 
-    // Rule 2: Determine Deformable Attention Scaling Factor based on good frame count density
-    let deformableAttentionScale = 1.0;
-    if (totalGoodFramesAcrossScan <= SCAN_CONFIG.MIN_GOOD_FRAMES_WARNING) {
-      // Scale down attention weighting for noisy frames / expand receptive field offset ranges
-      deformableAttentionScale = 0.65;
-      console.log('Moderate frame quality detected. Adjusting Deformable Attention offsets (Scale: 0.65).');
-    } else {
-      console.log('High frame quality verified. Utilizing standard Deformable Attention (Scale: 1.0).');
+    const combined = aggregateScan(stageFrames, SCAN_CONFIG.TOP_FRAMES_PER_STAGE, SCAN_CONFIG.FRAME_QUALITY_THRESHOLD);
+    if (!combined) {
+      this.updateInstructionBanner('No usable frames were captured. Please try again in brighter, even light.');
+      return;
     }
 
-    // Rule 3: Execute Physics-Informed Deep Learning Engine on Selected Top Frames
-    this.runPhysicsInformedDeepLearningEngine(bestFramesPerOrientation, deformableAttentionScale);
+    // The table, the session and the chat always get this same result.
+    this.scanResult = this.buildScanResult(combined);
+    this.updateDermUI(this.scanResult);
+    this.updateInstructionBanner('✅ Face Scan Complete! Review your metrics on the left, then click <b>Continue to Health Consultation</b> below.');
+    console.log('Scan results:', this.scanResult);
+
+    // Save metrics to session immediately so they're secured, and keep the scan in the user's history.
+    this.saveMetricsToSession();
+    const { lighting, ...metrics } = this.scanResult;
+    void saveScanToHistory(metrics);
+
+    // Add pulse animation to the proceed button so it's prominent
+    const reportBtn = document.getElementById('get-report-btn');
+    if (reportBtn) {
+      reportBtn.classList.add('pulse-highlight');
+    }
   }
 
-  /**
-   * Simulates/Executes the Physics Deep Learning Engine, individual metric calculations,
-   * and Iterative Robust Temporal Smoothing (IRTS).
-   */
-  private runPhysicsInformedDeepLearningEngine(topFrames: ScoredFrame[], attentionScale: number) {
-    this.updateInstructionBanner('Running Physics Deep Learning & IRTS Smoothing...');
-
-    if (topFrames.length === 0) return;
-
-    // Apply attention weighting to raw metrics collected from top ranked frames
-    const adjustedReadings = topFrames.map((frame) => {
-      const metrics = { ...frame.metrics };
-      // Physics constraint injection (e.g., optical flow consistency and Beer-Lambert law correction for perfusion/melanin)
-      metrics.erythema *= attentionScale;
-      metrics.melanin *= attentionScale;
-      metrics.hydration = Math.min(100, metrics.hydration * (0.8 + 0.2 * attentionScale));
-      return metrics;
-    });
-
-    // Individual Metric Calculators aggregation & IRTS (Iterative Robust Temporal Smoothing)
-    const keys = Object.keys(adjustedReadings[0]);
-    const smoothedStabilizedResults: any = {};
-
-    for (const key of keys) {
-      const values = adjustedReadings.map((m) => m[key]).filter((v) => typeof v === 'number' && !isNaN(v));
-
-      if (values.length > 0) {
-        // IRTS: Iterative Trimmed Median Smoothing with Residual Outlier Rejection
-        values.sort((a, b) => a - b);
-        const trimmed = values.length > 2 ? values.slice(1, values.length - 1) : values;
-        const mid = Math.floor(trimmed.length / 2);
-        smoothedStabilizedResults[key] =
-          trimmed.length % 2 !== 0 ? trimmed[mid] : (trimmed[mid - 1] + trimmed[mid]) / 2;
-      } else {
-        smoothedStabilizedResults[key] = adjustedReadings[0][key];
-      }
-    }
-
-    this.latestResults = smoothedStabilizedResults;
-    if (this.epoch <= MIN_EPOCH) {
-      this.updateDermUI(smoothedStabilizedResults);
-      this.updateInstructionBanner('Comprehensive Skin Health Analysis Complete!');
-      console.log('IRTS Smoothed Physics Engine Results:', smoothedStabilizedResults);
-    }
+  private buildScanResult(m: FrameMeasures): ScanResult {
+    const composite = deriveCompositeMetrics(m);
+    const result: ScanResult = {
+      version: SKIN_METRICS_VERSION,
+      health: 0,
+      glow: composite.glow,
+      hydration: composite.hydration,
+      melanin: m.melanin,
+      erythema: m.erythema,
+      oiliness: m.oiliness,
+      pores: m.pores,
+      texture: m.texture,
+      wrinkles: m.wrinkles,
+      fatigue: m.fatigue,
+      darkCircles: m.darkCircles,
+      heartRate: this.pulse.locked?.bpm ?? 0,
+      perfusion: this.pulse.locked?.perfusion ?? 0,
+      yellowness: m.yellowness,
+      imageQuality: m.quality,
+      acne: m.acne,
+      uvDamage: composite.uvDamage,
+      elasticity: composite.elasticity,
+      pigmentation: m.pigmentation,
+      lighting: m.lighting,
+    };
+    result.health = skinHealthScore(result);
+    return result;
   }
 
   private triggerRedetection() {
@@ -560,21 +446,14 @@ class FaceLandmarkerTask extends BaseVisionTask {
   }
 
   protected override displayVideoResult(result: FaceLandmarkerResult) {
-    console.log('in displayVideoResult');
-
     if (!this.canvasElement) {
       this.canvasElement = document.getElementById('output_canvas') as HTMLCanvasElement;
     }
     if (!this.canvasCtx && this.canvasElement) {
       this.canvasCtx = this.canvasElement.getContext('2d')!;
     }
-    console.log(
-      'in displayVideoResult !this.canvasElement || !this.canvasCtx = ',
-      !this.canvasElement || !this.canvasCtx
-    );
 
     if (!this.canvasElement || !this.canvasCtx) return;
-    console.log('Canvas Element and Context initialized');
     this.canvasElement.width = this.video.videoWidth;
     this.canvasElement.height = this.video.videoHeight;
     this.canvasCtx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
@@ -589,7 +468,6 @@ class FaceLandmarkerTask extends BaseVisionTask {
 
       for (const landmarks of result.faceLandmarks) {
         this.drawLandmarks(this.drawingUtils, landmarks);
-        console.log('Current Stage:', this.currentStage, 'Landmarks:', landmarks);
         if (this.currentStage !== 'IDLE' && this.currentStage !== 'COMPLETED') {
           this.checkPoseAndAdvanceSequence(landmarks);
         }
@@ -597,27 +475,6 @@ class FaceLandmarkerTask extends BaseVisionTask {
         this.runDermatologyAnalysis(landmarks);
       }
     }
-  }
-
-  private extractRoi(frame: any, landmarks: any, region: string): any {
-    let centerLm;
-    if (region === 'forehead') centerLm = landmarks[10];
-    else if (region === 'cheek') centerLm = landmarks[205];
-    else if (region === 'rightcheek') centerLm = landmarks[425];
-    else if (region === 'undereye') centerLm = landmarks[114];
-    else centerLm = landmarks[10];
-
-    const centerX = Math.floor(centerLm.x * frame.cols);
-    const centerY = Math.floor(centerLm.y * frame.rows);
-
-    const width = 100;
-    const height = 50;
-
-    let x = Math.max(0, Math.min(centerX - width / 2, frame.cols - width));
-    let y = Math.max(0, Math.min(centerY, frame.rows - height));
-
-    let rect = new cv.Rect(x, y, width, height);
-    return frame.roi(rect);
   }
 
   private drawLandmarks(drawingUtils: DrawingUtils, landmarks: any[]) {
@@ -636,366 +493,135 @@ class FaceLandmarkerTask extends BaseVisionTask {
   }
 
   private isProcessing = false;
-  private rppgBuffer: number[] = [];
-  private timeBuffer: number[] = [];
-  private lastHeartRate: number = 0;
-  private readonly BUFFER_WINDOW_MS = 5000;
-  private latestResults: any = null;
+  private analysisCanvas: HTMLCanvasElement | null = null;
 
-  private async runDermatologyAnalysis(landmarks: any[]) {
+  /**
+   * Per video frame, during a scan: a cheap skin-colour sample for the pulse
+   * (centre pose only), and the full skin analysis for the first
+   * FRAMES_PER_STAGE frames of each pose. Analysing every frame would slow the
+   * camera down below the frame rate the pulse needs.
+   */
+  private runDermatologyAnalysis(landmarks: any[]) {
     if (this.isProcessing) return;
+    const scanning = this.currentStage !== 'IDLE' && this.currentStage !== 'COMPLETED';
+    if (!scanning) return;
+    const readingPulse = this.currentStage === 'CENTER' && !this.pulse.locked && this.centerStartedAt > 0;
+    const bucket = this.stageFrameBuckets[this.currentStage];
+    const collecting = this.poseMatched && this.stageFramesCount > 0 && bucket.length < SCAN_CONFIG.FRAMES_PER_STAGE;
+    if (!readingPulse && !collecting) return;
     this.isProcessing = true;
 
-    let frame: any,
-      balanced: any,
-      processed: any,
-      extractedRoi: any,
-      roi: any,
-      cheekRoi: any,
-      underEyeRoi: any,
-      rightCheekRoi: any,
-      normRoi: any,
-      normCheekRoi: any,
-      normUnderEyeRoi: any;
-
     try {
-      let sourceElement: HTMLVideoElement | HTMLImageElement;
-      if (this.runningMode === 'IMAGE') {
-        sourceElement = document.getElementById('test-image') as HTMLImageElement;
-      } else {
-        sourceElement = this.video;
+      const source =
+        this.runningMode === 'IMAGE' ? (document.getElementById('test-image') as HTMLImageElement) : this.video;
+      if (!source) return;
+      const width = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
+      const height = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight;
+      if (!width || !height) return;
+      const regions = faceRegions(landmarks, width, height);
+      if (!regions) return;
+
+      if (!this.analysisCanvas) this.analysisCanvas = document.createElement('canvas');
+      const canvas = this.analysisCanvas;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
       }
-      if (!sourceElement) return;
-
-      let tempCanvas = document.getElementById('derm-buffer') as HTMLCanvasElement;
-      if (!tempCanvas) {
-        tempCanvas = document.createElement('canvas');
-        tempCanvas.id = 'derm-buffer';
-        tempCanvas.style.display = 'none';
-        document.body.appendChild(tempCanvas);
-      }
-
-      const width = sourceElement instanceof HTMLVideoElement ? sourceElement.videoWidth : sourceElement.naturalWidth;
-      const height =
-        sourceElement instanceof HTMLVideoElement ? sourceElement.videoHeight : sourceElement.naturalHeight;
-
-      tempCanvas.width = width;
-      tempCanvas.height = height;
-      let ctx = tempCanvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) return;
-      ctx.drawImage(sourceElement, 0, 0, width, height);
+      ctx.drawImage(source, 0, 0, width, height);
 
-      frame = cv.imread('derm-buffer');
-      balanced = DermatologyEngine.grayWorldWhiteBalance(frame);
-      processed = DermatologyEngine.claheEnhance(balanced);
-
-      extractedRoi = this.extractRoi(processed, landmarks, 'forehead');
-      roi = extractedRoi.clone();
-
-      cheekRoi = this.extractRoi(processed, landmarks, 'cheek');
-      underEyeRoi = this.extractRoi(processed, landmarks, 'undereye');
-      rightCheekRoi = this.extractRoi(processed, landmarks, 'rightcheek');
-
-      const lighting = DermatologyEngine.detectLightingCondition(roi, cheekRoi, rightCheekRoi);
-
-      normRoi = DermatologyEngine.normalizeIllumination(roi);
-      normCheekRoi = DermatologyEngine.normalizeIllumination(cheekRoi);
-      normUnderEyeRoi = DermatologyEngine.normalizeIllumination(underEyeRoi);
-
-      const eyeLandmarks = [
-        landmarks[33],
-        landmarks[160],
-        landmarks[158],
-        landmarks[133],
-        landmarks[153],
-        landmarks[144],
-      ];
-
-      const sharpness = DermatologyEngine.getImageSharpness(roi);
-      const glare = DermatologyEngine.getSpecularGlare(roi);
-      const quality = DermatologyEngine.faceQualityHeuristic(roi, sharpness, glare);
-
-      const rawHemoglobin = DermatologyEngine.getHemoglobinIndex(roi);
-
-      const now = performance.now();
-      this.rppgBuffer.push(rawHemoglobin);
-      this.timeBuffer.push(now);
-
-      while (this.timeBuffer.length > 0 && now - this.timeBuffer[0] > this.BUFFER_WINDOW_MS) {
-        this.rppgBuffer.shift();
-        this.timeBuffer.shift();
+      if (readingPulse) {
+        const patches = [regions.forehead, regions.rightCheek, regions.leftCheek].map((r) =>
+          ctx.getImageData(r.x, r.y, r.width, r.height)
+        );
+        this.trackPulse(skinColour(patches));
       }
-
-      if (now - this.timeBuffer[0] > 3000) {
-        const estimatedHR = DermatologyEngine.estimateHeartRate(this.rppgBuffer, this.timeBuffer);
-        if (estimatedHR > 0) {
-          this.lastHeartRate = this.lastHeartRate === 0 ? estimatedHR : this.lastHeartRate * 0.8 + estimatedHR * 0.2;
-        }
+      if (collecting) {
+        const analysis = analyzeFrame(ctx.getImageData(0, 0, width, height), landmarks);
+        if (analysis) bucket.push(analysis.measures);
       }
-
-      const luminance = DermatologyEngine.getLuminanceVariance(normRoi);
-      const erythema = DermatologyEngine.getErythemaIndex(normRoi);
-      const poreDensity = DermatologyEngine.getBlackHatPoreDensity(normRoi);
-      const melanin = DermatologyEngine.getMelaninIndex(normRoi);
-      const yellowness = DermatologyEngine.getYellownessIndex(normRoi);
-      const fatigueEAR = DermatologyEngine.getEyeAspectRatio(eyeLandmarks);
-      const heartRate = this.lastHeartRate;
-      const oiliness = glare;
-
-      const texture = DermatologyEngine.getTextureScore(normRoi);
-      const wrinkles = DermatologyEngine.getWrinkleScore(normRoi);
-      const darkCircles = DermatologyEngine.getDarkCircleScore(normUnderEyeRoi, normCheekRoi);
-      const hydration = DermatologyEngine.getHydrationScore(luminance, texture);
-      const imageQuality = DermatologyEngine.getImageQualityScore(quality);
-      const glow = Math.min((luminance / 1500) * 100, 100);
-
-      const acne = DermatologyEngine.getAcneSeverity(normRoi);
-      const uvDamage = DermatologyEngine.getUVDamageScore(normRoi, wrinkles);
-      const elasticity = DermatologyEngine.getElasticityScore(texture, wrinkles, fatigueEAR);
-
-      const healthMetrics = {
-        erythema,
-        yellowness,
-        poreDensity,
-        melanin,
-        wrinkles,
-        darkCircles,
-        hydration,
-        acne,
-        uvDamage,
-      };
-      const healthScore = DermatologyEngine.getOverallSkinHealth(healthMetrics);
-
-      const results = {
-        health: healthScore,
-        luminance,
-        glow,
-        hydration,
-        melanin,
-        erythema,
-        oiliness,
-        pores: poreDensity,
-        texture,
-        wrinkles,
-        fatigue: fatigueEAR,
-        darkCircles,
-        heartRate,
-        perfusion: Math.min((rawHemoglobin / 150) * 100, 100),
-        yellowness,
-        imageQuality,
-        acne,
-        uvDamage,
-        elasticity,
-        lighting,
-      };
-
-      // Collect frames into stage buckets during live scan progression
-      if (this.currentStage !== 'IDLE' && this.currentStage !== 'COMPLETED' && this.stageFramesCount > 0) {
-        this.stageFrameBuckets[this.currentStage].push({
-          metrics: results,
-          quality: imageQuality,
-          stage: this.currentStage,
-          timestamp: performance.now(),
-        });
-      }
-
-      this.latestResults = results;
-      // this.updateDermUI(results);
     } catch (error: any) {
       console.error('Error in dermatology frame analysis:', error);
     } finally {
-      if (frame)
-        try {
-          frame.delete();
-        } catch (e) {}
-      if (balanced)
-        try {
-          balanced.delete();
-        } catch (e) {}
-      if (processed)
-        try {
-          processed.delete();
-        } catch (e) {}
-      if (extractedRoi)
-        try {
-          extractedRoi.delete();
-        } catch (e) {}
-      if (roi)
-        try {
-          roi.delete();
-        } catch (e) {}
-      if (cheekRoi)
-        try {
-          cheekRoi.delete();
-        } catch (e) {}
-      if (underEyeRoi)
-        try {
-          underEyeRoi.delete();
-        } catch (e) {}
-      if (rightCheekRoi)
-        try {
-          rightCheekRoi.delete();
-        } catch (e) {}
-      if (normRoi)
-        try {
-          normRoi.delete();
-        } catch (e) {}
-      if (normCheekRoi)
-        try {
-          normCheekRoi.delete();
-        } catch (e) {}
-      if (normUnderEyeRoi)
-        try {
-          normUnderEyeRoi.delete();
-        } catch (e) {}
-
       this.isProcessing = false;
     }
   }
 
-  private updateDermUI(data: any) {
-    this.epoch++;
+  /**
+   * Feeds the skin's colour into the pulse tracker. Only during the still centre
+   * pose: turning the head ruins the signal.
+   */
+  private trackPulse(colour: { r: number; g: number; b: number }) {
+    const pulse = this.pulse.add({ t: performance.now(), ...colour });
+    if (!pulse) return;
+    const samples = this.pulse.samples;
+    const seconds = (samples[samples.length - 1].t - samples[0].t) / 1000;
+    console.log(
+      `Pulse locked: ${pulse.bpm} BPM (SNR ${pulse.snr.toFixed(1)} dB, prominence ${pulse.prominence.toFixed(1)} dB, ` +
+        `${((samples.length - 1) / seconds).toFixed(1)} samples per second)`
+    );
+  }
+
+  private updateDermUI(data: ScanResult) {
     const setText = (id: string, text: string) => {
       const el = document.getElementById(id);
       if (el) el.innerText = text;
     };
-
-    const setStatus = (
-      id: string,
-      value: number,
-      lowThresh: number,
-      highThresh: number,
-      higherIsBetter: boolean = false
-    ) => {
+    const setBadge = (id: string, text: string, tone: 'normal' | 'fair' | 'high' | 'low') => {
       const el = document.getElementById(id);
-      if (!el) return;
-
-      if (value > highThresh) {
-        el.innerHTML = higherIsBetter
-          ? `<span class="status-badge status-normal">Excellent</span>`
-          : `<span class="status-badge status-high">Elevated</span>`;
-      } else if (value < lowThresh) {
-        el.innerHTML = higherIsBetter
-          ? `<span class="status-badge status-high">Low</span>`
-          : `<span class="status-badge status-low">Low</span>`;
-      } else {
-        el.innerHTML = `<span class="status-badge status-normal">Normal</span>`;
-      }
+      if (el) el.innerHTML = `<span class="status-badge status-${tone}">${text}</span>`;
     };
 
-    // ═══ FIXED METRICS (Universal Baseline) ═══
+    // Every graded metric gets its status from the same rules the chat and report use.
+    const tones = { good: 'normal', fair: 'fair', concern: 'high' } as const;
+    const readings = new Map(interpretSkin(data).map((r) => [r.key, r]));
+    const showReading = (key: keyof SkinMetrics, valueId: string, statusId: string, value: string) => {
+      setText(valueId, Number.isFinite(data[key]) ? value : 'Not measured');
+      const reading = readings.get(key);
+      if (reading) setBadge(statusId, reading.status, tones[reading.level]);
+    };
+
+    // ═══ ALL METRICS (Fixed — Always Shown) ═══
 
     // Skin Health Score
-    setText('val-health', Math.round(data.health).toString() + '/100');
-    setStatus('stat-health', data.health, 50, 80, true);
+    setText('val-health', `${Math.round(data.health)}/100`);
+    const health = healthLevel(data.health);
+    setBadge('stat-health', { good: 'Good', fair: 'Fair', concern: 'Needs care' }[health], tones[health]);
 
-    // Heart Rate
-    if (data.heartRate === 0) {
-      setText('val-heartrate', 'Calibrating...');
-      const statEl = document.getElementById('stat-heartrate');
-      if (statEl) statEl.innerHTML = `<span class="status-badge status-normal">Buffering</span>`;
+    // Heart Rate & Perfusion (only when a steady pulse was read during the centre pose)
+    if (data.heartRate > 0) {
+      setText('val-heartrate', `${data.heartRate} BPM`);
+      if (data.heartRate > 100) setBadge('stat-heartrate', 'Elevated', 'high');
+      else if (data.heartRate < 50) setBadge('stat-heartrate', 'Low', 'low');
+      else setBadge('stat-heartrate', 'Normal', 'normal');
+      setText('val-perfusion', `${data.perfusion}/100`);
+      setBadge('stat-perfusion', data.perfusion >= 30 ? 'Good' : 'Weak', data.perfusion >= 30 ? 'normal' : 'fair');
     } else {
-      setText('val-heartrate', Math.round(data.heartRate).toString() + ' BPM');
-      setStatus('stat-heartrate', data.heartRate, 60, 100);
+      setText('val-heartrate', 'Not measured');
+      setBadge('stat-heartrate', 'Hold still', 'fair');
+      setText('val-perfusion', 'Not measured');
+      setBadge('stat-perfusion', 'No pulse', 'fair');
     }
 
-    // Skin Perfusion
-    setText('val-perfusion', Math.round(data.perfusion).toString() + '/100');
-    setStatus('stat-perfusion', data.perfusion, 40, 80, true);
-
-    // Wrinkle Score
-    setText('val-wrinkles', data.wrinkles.toFixed(1) + '%');
-    setStatus('stat-wrinkles', data.wrinkles, 1, 5);
-
-    // Dark Circles
-    setText('val-dark-circles', Math.round(data.darkCircles).toString() + '%');
-    setStatus('stat-dark-circles', data.darkCircles, 10, 30);
-
-    // Fatigue
-    setText('val-fatigue', data.fatigue.toFixed(3));
-    const fatigueEl = document.getElementById('stat-fatigue');
-    if (fatigueEl) {
-      fatigueEl.innerHTML =
-        data.fatigue < 0.2
-          ? `<span class="status-badge status-high">Fatigued</span>`
-          : `<span class="status-badge status-normal">Awake</span>`;
-    }
-
-    // Jaundice Risk
-    setText('val-yellowness', data.yellowness.toFixed(1));
-    setStatus('stat-yellowness', data.yellowness, 110, 140);
-
-    // ═══ VARIABLE METRICS (Climate-Adapted) ═══
-    // These are dynamically rendered based on the detected climate zone.
-    // We update whichever variable metric elements exist in the DOM.
-
-    this.updateVariableMetric(data, 'oiliness', () => {
-      setText('val-oiliness', data.oiliness.toFixed(1) + '%');
-      setStatus('stat-oiliness', data.oiliness, 5, 15);
-    });
-
-    this.updateVariableMetric(data, 'pores', () => {
-      setText('val-pores', data.pores.toFixed(1) + '%');
-      setStatus('stat-pores', data.pores, 2, 10);
-    });
-
-    this.updateVariableMetric(data, 'acne', () => {
-      setText('val-acne', data.acne < 1 ? 'Clear' : data.acne.toFixed(1) + '%');
-      const acneEl = document.getElementById('stat-acne');
-      if (acneEl) {
-        if (data.acne < 1) acneEl.innerHTML = `<span class="status-badge status-normal">Clear</span>`;
-        else if (data.acne < 10) acneEl.innerHTML = `<span class="status-badge status-normal">Mild</span>`;
-        else if (data.acne < 30) acneEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
-        else acneEl.innerHTML = `<span class="status-badge status-high">Severe</span>`;
-      }
-    });
-
-    this.updateVariableMetric(data, 'hydration', () => {
-      setText('val-hydration', Math.round(data.hydration).toString() + '/100');
-      setStatus('stat-hydration', data.hydration, 40, 70, true);
-    });
-
-    this.updateVariableMetric(data, 'uvDamage', () => {
-      setText('val-uv', Math.round(data.uvDamage).toString() + '/100');
-      const uvEl = document.getElementById('stat-uv');
-      if (uvEl) {
-        if (data.uvDamage < 20) uvEl.innerHTML = `<span class="status-badge status-normal">Minimal</span>`;
-        else if (data.uvDamage < 50) uvEl.innerHTML = `<span class="status-badge status-high">Moderate</span>`;
-        else uvEl.innerHTML = `<span class="status-badge status-high">High</span>`;
-      }
-    });
-
-    this.updateVariableMetric(data, 'melanin', () => {
-      setText('val-melanin', data.melanin.toFixed(2));
-      setStatus('stat-melanin', data.melanin, 5, 25);
-    });
-
-    this.updateVariableMetric(data, 'erythema', () => {
-      setText('val-erythema', data.erythema.toFixed(1));
-      setStatus('stat-erythema', data.erythema, 90, 150);
-    });
-
-    this.updateVariableMetric(data, 'texture', () => {
-      setText('val-texture', Math.round(data.texture).toString() + '/100');
-      setStatus('stat-texture', data.texture, 40, 75, true);
-    });
-
-    this.updateVariableMetric(data, 'glow', () => {
-      setText('val-luminance', Math.round(data.glow).toString() + '/100');
-      setStatus('stat-luminance', data.glow, 40, 70, true);
-    });
-
-    this.updateVariableMetric(data, 'elasticity', () => {
-      setText('val-elasticity', Math.round(data.elasticity).toString() + '/100');
-      setStatus('stat-elasticity', data.elasticity, 50, 80, true);
-    });
+    showReading('glow', 'val-luminance', 'stat-luminance', `${Math.round(data.glow)}/100`);
+    showReading('hydration', 'val-hydration', 'stat-hydration', `${Math.round(data.hydration)}/100`);
+    showReading('oiliness', 'val-oiliness', 'stat-oiliness', `${data.oiliness.toFixed(1)}%`);
+    showReading('pores', 'val-pores', 'stat-pores', `${data.pores.toFixed(1)}%`);
+    showReading('pigmentation', 'val-melanin', 'stat-melanin', `${Math.round(data.pigmentation)}/100`);
+    showReading('erythema', 'val-erythema', 'stat-erythema', data.erythema.toFixed(1));
+    showReading('texture', 'val-texture', 'stat-texture', `${Math.round(data.texture)}/100`);
+    showReading('wrinkles', 'val-wrinkles', 'stat-wrinkles', `${Math.round(data.wrinkles)}/100`);
+    showReading('darkCircles', 'val-dark-circles', 'stat-dark-circles', `${Math.round(data.darkCircles)}%`);
+    showReading('fatigue', 'val-fatigue', 'stat-fatigue', data.fatigue.toFixed(3));
+    showReading('yellowness', 'val-yellowness', 'stat-yellowness', `${data.yellowness.toFixed(1)}°`);
+    showReading('acne', 'val-acne', 'stat-acne', `${data.acne.toFixed(1)}%`);
+    showReading('uvDamage', 'val-uv', 'stat-uv', `${Math.round(data.uvDamage)}/100`);
+    showReading('elasticity', 'val-elasticity', 'stat-elasticity', `${Math.round(data.elasticity)}/100`);
 
     // ═══ DIAGNOSTICS ═══
 
-    setText(
-      'val-image-quality',
-      typeof data.imageQuality === 'string' ? data.imageQuality : Math.round(data.imageQuality).toString() + '/100'
-    );
+    setText('val-image-quality', `${Math.round(data.imageQuality)}/100`);
     const iqEl = document.getElementById('stat-image-quality');
     if (iqEl && data.lighting) {
       const lt = data.lighting.lightingType;
@@ -1012,17 +638,6 @@ class FaceLandmarkerTask extends BaseVisionTask {
         iqEl.innerHTML = `<span class="status-badge status-high">⚠ Uneven (${uni}%)</span>`;
       }
     }
-  }
-
-  /**
-   * Helper: only update a variable metric if its element exists in the DOM
-   * (i.e., it was rendered for the current climate zone).
-   */
-  private updateVariableMetric(data: any, key: string, updater: () => void) {
-    const meta = VARIABLE_METRIC_REGISTRY[key as keyof typeof VARIABLE_METRIC_REGISTRY];
-    if (!meta) return;
-    const el = document.getElementById(meta.valId);
-    if (el) updater();
   }
 }
 

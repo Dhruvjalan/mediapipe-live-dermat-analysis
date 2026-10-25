@@ -6,13 +6,10 @@
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev": "vite",
-    "predev": "node copy-wasm.js",
     "build": "tsc && vite build",
-    "prebuild": "node copy-wasm.js",
     "preview": "vite preview",
-    "test": "playwright test --project=chromium-gpu",
-    "format": "prettier --write \"src/**/*.{ts,html,css}\"",
-    "prepare": "husky"
+    "test": "node --import ./tests/resolve-ts.mjs --test \"tests/unit/**/*.test.ts\"",
+    "format": "prettier --write \"src/**/*.{ts,html,css}\""
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

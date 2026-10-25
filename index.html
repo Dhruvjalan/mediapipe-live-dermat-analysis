@@ -11,19 +11,6 @@
     <div id="app"></div>
 
 
-    <script type="module" src="/src/main.ts"></script> <!-- Load main.ts first -->
-
-<script type="text/javascript">
-  window.Module = {
-    onRuntimeInitialized: () => {
-      console.log("OpenCV.js initialized");
-      // Use the global function defined in main.ts
-      if (window.startApp) {
-        window.startApp();
-      }
-    }
-  };
-</script>
-<script async src="/opencv.js" type="text/javascript"></script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

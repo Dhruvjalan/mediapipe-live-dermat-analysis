@@ -4,9 +4,12 @@
  */
 
 import { GroqService, type SkinMetrics, type OptionCard } from '../services/groq-service';
-import { renderReport } from '../services/report-generator';
+import { CRISIS_SUPPORT, renderReport } from '../services/report-generator';
+import { detectSafetyFlags } from '../services/lifestyle-risk';
+import { SKIN_METRICS_VERSION } from '../services/skin-interpretation';
+import { isReportRequest, offersReport, questionCounterText } from '../services/consultation-flow';
+import { saveConsultationToHistory } from '../services/history-store';
 import { transcribeAudioClientSide, preloadLocalWhisper } from '../services/local-whisper-service';
-import { detectLocation, getCachedLocation } from '../services/location-service';
 
 // @ts-ignore
 import template from '../templates/health-chat.html?raw';
@@ -17,6 +20,15 @@ let groqService: GroqService;
 let skinMetrics: SkinMetrics | null = null;
 let isWaitingForResponse = false;
 let questionCount = 0;
+/** Whether the latest message offered the report (so a plain "yes" means "generate it"). */
+let reportOffered = false;
+/** Safety messages already shown, so each appears once per consultation. */
+const shownSafetyFlags = new Set<string>();
+
+const REPORT_OPTIONS: OptionCard[] = [
+  { emoji: '📋', label: 'Yes, generate my report!', value: 'generate_report' },
+  { emoji: '💬', label: 'I have more to share', value: 'more_info' },
+];
 
 // ── DOM & Speech References ──────────────────────────────────────────────────
 
@@ -60,22 +72,24 @@ export async function setupHealthChat(container: HTMLElement) {
   setupSpeechRecognition();
   preloadLocalWhisper();
 
-  // Load metrics from sessionStorage
+  // Load metrics from sessionStorage (scans saved on an older scale are ignored)
   const stored = sessionStorage.getItem('ayurgenx-skin-metrics');
   if (stored) {
     try {
-      skinMetrics = JSON.parse(stored);
+      const parsed = JSON.parse(stored);
+      skinMetrics = parsed?.version === SKIN_METRICS_VERSION ? parsed : null;
     } catch {
       skinMetrics = null;
     }
   }
 
-  // If no metrics, show a fallback / demo mode
+  // The report describes the user's own scan, so without one there's nothing honest to report.
   if (!skinMetrics) {
-    skinMetrics = getDefaultMetrics();
     addSystemMessage(
-      "⚠️ No skin scan data found. Using demo values. For best results, run a skin scan first from the Face Landmarker page, then click 'Get Health Report'."
+      '📷 No completed face scan found. Please complete the <a href="#/face-landmarker">Multi-Angle Scan</a> first, then tap <b>Continue to Health Consultation</b>.'
     );
+    disableInput();
+    return;
   }
 
   // Populate metrics bar
@@ -133,7 +147,9 @@ export function cleanupHealthChat() {
   recognition = null;
   skinMetrics = null;
   questionCount = 0;
+  reportOffered = false;
   isWaitingForResponse = false;
+  shownSafetyFlags.clear();
 }
 
 // ── Metrics Bar ──────────────────────────────────────────────────────────────
@@ -150,42 +166,28 @@ function populateMetricsBar(m: SkinMetrics) {
   set('chat-m-oiliness', `${m.oiliness.toFixed(1)}%`);
   set('chat-m-texture', `${m.texture.toFixed(0)}/100`);
   set('chat-m-elasticity', `${m.elasticity.toFixed(0)}/100`);
-
-  // Populate Location Pill
-  const locEl = document.getElementById('chat-m-location');
-  const storedLoc = sessionStorage.getItem('ayurgenx-location');
-  if (storedLoc) {
-    try {
-      const loc = JSON.parse(storedLoc);
-      if (locEl) locEl.textContent = loc.city ? `${loc.city}, ${loc.country || ''}` : loc.displayName;
-    } catch {}
-  } else {
-    detectLocation().then((loc) => {
-      if (loc && locEl) {
-        locEl.textContent = loc.city ? `${loc.city}, ${loc.country || ''}` : loc.displayName;
-      } else if (locEl) {
-        locEl.textContent = 'Auto (Global)';
-      }
-    });
-  }
 }
 
 // ── Chat Messages ────────────────────────────────────────────────────────────
 
 function addWelcomeMessage() {
   const msg = document.createElement('div');
-  msg.className = 'chat-message chat-message-system chat-welcome';
+  msg.className = 'chat-message chat-message-ai chat-welcome';
   msg.innerHTML = `
     <div class="chat-avatar chat-avatar-ai">
       <span>🩺</span>
+      <span class="avatar-online-dot"></span>
     </div>
     <div class="chat-bubble chat-bubble-ai chat-welcome-bubble">
-      <div class="chat-welcome-title">Welcome to AyurGenX Health Consultation</div>
-      <p>I've analyzed your skin scan data and I'll ask you a few fun questions to understand your lifestyle better. Then I'll generate a personalized health report just for you!</p>
+      <div class="chat-welcome-header">
+        <span class="doctor-badge">🌿 Dr. AyurGenX AI &bull; Clinical Dermal Specialist</span>
+        <div class="chat-welcome-title">Personalized Ayurvedic Health Consultation</div>
+      </div>
+      <p>I've analyzed your high-resolution facial scan and loaded your dermal biomarker telemetry. I'll ask you a few targeted lifestyle questions to uncover your unique doshic balance and generate a customized holistic health protocol!</p>
       <div class="chat-welcome-badges">
-        <span class="chat-badge">🔬 AI-Powered Analysis</span>
-        <span class="chat-badge">🌿 Ayurvedic Insights</span>
-        <span class="chat-badge">📋 Personalized Report</span>
+        <span class="chat-badge">🔬 Dermal Telemetry Ingested</span>
+        <span class="chat-badge">🍃 Dosha Diagnostics</span>
+        <span class="chat-badge">📋 Customized Protocol</span>
       </div>
     </div>
   `;
@@ -198,8 +200,10 @@ function addAIMessage(text: string, animate: boolean = true): HTMLElement {
   msg.innerHTML = `
     <div class="chat-avatar chat-avatar-ai">
       <span>🩺</span>
+      <span class="avatar-online-dot"></span>
     </div>
     <div class="chat-bubble chat-bubble-ai">
+      <div class="chat-bubble-sender">Dr. AyurGenX AI</div>
       <div class="chat-bubble-content"></div>
     </div>
   `;
@@ -222,6 +226,7 @@ function addUserMessage(text: string) {
   msg.className = 'chat-message chat-message-user';
   msg.innerHTML = `
     <div class="chat-bubble chat-bubble-user">
+      <div class="chat-bubble-sender user-sender">You</div>
       <div class="chat-bubble-content">${escapeHTML(text)}</div>
     </div>
     <div class="chat-avatar chat-avatar-user">
@@ -232,17 +237,36 @@ function addUserMessage(text: string) {
   scrollToBottom();
 }
 
-function addSystemMessage(text: string) {
+function addSystemMessage(text: string, tone: 'info' | 'safety' = 'info') {
   const msg = document.createElement('div');
   msg.className = 'chat-message chat-message-system-info';
   msg.innerHTML = `
-    <div class="chat-system-bubble">
-      <span class="material-icons" style="font-size: 16px;">info</span>
+    <div class="chat-system-bubble${tone === 'safety' ? ' chat-safety-bubble' : ''}">
+      <span class="material-icons" style="font-size: 16px;">${tone === 'safety' ? 'health_and_safety' : 'info'}</span>
       <span>${formatMessageText(text)}</span>
     </div>
   `;
   messagesArea.appendChild(msg);
   scrollToBottom();
+}
+
+/**
+ * A fixed message, written in code, for any critical statement (not eating,
+ * not sleeping, fainting, self-harm) — shown right away, whatever the LLM says.
+ */
+function showSafetyMessages(userText: string) {
+  for (const flag of detectSafetyFlags(userText)) {
+    if (flag.severity !== 'critical' || shownSafetyFlags.has(flag.id)) continue;
+    shownSafetyFlags.add(flag.id);
+    if (flag.topic === 'self_harm') {
+      addSystemMessage(`💛 Thank you for telling me. You don't have to deal with this alone. ${CRISIS_SUPPORT}`, 'safety');
+    } else {
+      addSystemMessage(
+        `⚠️ **${flag.label}** is a health concern, not just a skin one. If that's accurate, please talk to a doctor soon. Skincare can't fix it.`,
+        'safety'
+      );
+    }
+  }
 }
 
 function addTypingIndicator(): HTMLElement {
@@ -252,8 +276,10 @@ function addTypingIndicator(): HTMLElement {
   msg.innerHTML = `
     <div class="chat-avatar chat-avatar-ai">
       <span>🩺</span>
+      <span class="avatar-online-dot"></span>
     </div>
     <div class="chat-bubble chat-bubble-ai chat-typing-bubble">
+      <div class="chat-bubble-sender">Dr. AyurGenX AI is thinking...</div>
       <div class="chat-typing-dots">
         <span></span><span></span><span></span>
       </div>
@@ -273,6 +299,8 @@ function removeTypingIndicator() {
 
 function renderOptionCards(options: OptionCard[]) {
   optionsContainer.innerHTML = '';
+  // Ensure optionsContainer is always placed at the bottom of messagesArea
+  messagesArea.appendChild(optionsContainer);
   optionsContainer.style.display = 'flex';
 
   options.forEach((opt) => {
@@ -292,8 +320,10 @@ function renderOptionCards(options: OptionCard[]) {
     optionsContainer.querySelectorAll('.chat-option-card').forEach((card, i) => {
       setTimeout(() => {
         (card as HTMLElement).classList.add('visible');
-      }, i * 80);
+        scrollToBottom();
+      }, i * 60);
     });
+    scrollToBottom();
   });
 }
 
@@ -305,22 +335,39 @@ function clearOptionCards() {
 async function selectOption(opt: OptionCard) {
   clearOptionCards();
   addUserMessage(`${opt.emoji} ${opt.label}`);
-  await sendToLLM(opt.value);
+  // The readable label is the user's answer; only the report request is sent as a code.
+  await sendToLLM(opt.value === 'generate_report' ? opt.value : opt.label);
 }
 
 // ── Voice Banner Overlay Helpers ─────────────────────────────────────────────
 
-function showVoiceBanner(
-  title: string = 'Recording in progress...',
-  subtitle: string = 'Click anywhere on this card to stop & convert to text'
-) {
-  const banner = document.getElementById('voice-recording-banner');
-  const bannerTitle = document.getElementById('voice-banner-title');
-  const bannerSubtitle = document.getElementById('voice-banner-subtitle');
+/** The centre overlay while the microphone is recording: the only time it says "Listening". */
+function showRecordingOverlay() {
+  setOverlay({ busy: false, icon: 'mic', title: 'Listening...', hint: 'Speak your answer clearly. Tap to complete.' });
+}
 
-  if (bannerTitle) bannerTitle.textContent = title;
-  if (bannerSubtitle) bannerSubtitle.textContent = subtitle;
-  if (banner) banner.style.display = 'flex';
+/** The centre overlay while the app works (transcribing, preparing the report): no microphone prompt. */
+function showBusyOverlay(icon: string, title: string, hint: string) {
+  setOverlay({ busy: true, icon, title, hint });
+}
+
+function setOverlay(o: { busy: boolean; icon: string; title: string; hint: string }) {
+  const banner = document.getElementById('voice-recording-banner');
+  if (!banner) return;
+  banner.classList.toggle('is-busy', o.busy);
+  const setText = (id: string, text: string) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setText('voice-banner-icon', o.icon);
+  setText('voice-banner-label', o.title);
+  setText('voice-banner-hint', o.hint);
+  const micButton = document.getElementById('voice-banner-mic-btn') as HTMLButtonElement | null;
+  if (micButton) {
+    micButton.disabled = o.busy;
+    micButton.setAttribute('aria-label', o.busy ? o.title : 'Stop recording');
+  }
+  banner.style.display = 'flex';
 }
 
 function hideVoiceBanner() {
@@ -411,7 +458,7 @@ async function startVoiceRecording() {
         audioChunks = [];
 
         // UI Transcribing state inside banner
-        showVoiceBanner('⚡ Transcribing voice...', 'Converting speech to text...');
+        showBusyOverlay('graphic_eq', 'Transcribing your answer...', 'Turning your speech into text.');
 
         if (micBtn) {
           micBtn.classList.remove('listening');
@@ -468,7 +515,7 @@ async function startVoiceRecording() {
       isRecording = true;
 
       // Show Voice Recording Center Banner Overlay
-      showVoiceBanner('Recording in progress...', 'Click anywhere on this card to stop & convert to text');
+      showRecordingOverlay();
 
       if (micBtn) {
         micBtn.classList.add('listening');
@@ -496,7 +543,7 @@ async function startVoiceRecording() {
 
 function stopRecordingAndTranscribe() {
   if (isRecording) {
-    showVoiceBanner('⚡ Transcribing voice...', 'Converting speech to text...');
+    showBusyOverlay('graphic_eq', 'Transcribing your answer...', 'Turning your speech into text.');
   }
 
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -618,6 +665,7 @@ async function askFirstQuestion() {
     const response = await groqService.chat('');
     removeTypingIndicator();
     questionCount++;
+    reportOffered = !!response.options?.some((o) => o.value === 'generate_report');
     updateQuestionCounter();
 
     addAIMessage(response.message);
@@ -644,25 +692,28 @@ async function sendToLLM(userInput: string) {
   isWaitingForResponse = true;
   disableInput();
   clearOptionCards();
+  showSafetyMessages(userInput);
 
-  const isExplicitReportRequest =
-    userInput === 'generate_report' ||
-    userInput.toLowerCase().includes('generate my report') ||
-    userInput.toLowerCase().includes('generate report') ||
-    (questionCount >= 6 && userInput.toLowerCase().trim() === 'yes');
+  const isExplicitReportRequest = isReportRequest(userInput, reportOffered);
 
   if (isExplicitReportRequest) {
-    showVoiceBanner('✨ Synthesizing Health Report...', 'Analyzing telemetry metrics & generating Ayurvedic plan...');
+    showBusyOverlay(
+      'auto_awesome',
+      'Preparing your health report...',
+      'Reading your answers and scan results. This takes a few seconds.'
+    );
   }
   addTypingIndicator();
 
   try {
-    const response = isExplicitReportRequest ? await groqService.generateReport() : await groqService.chat(userInput);
+    // Anything typed with the request ("generate my report, also...") still counts as an answer.
+    const response = isExplicitReportRequest
+      ? await groqService.generateReport(undefined, userInput)
+      : await groqService.chat(userInput);
 
     removeTypingIndicator();
     hideVoiceBanner();
     questionCount++;
-    updateQuestionCounter();
 
     if (response.isReport) {
       // Hide chat UI elements so report renders from the top
@@ -670,7 +721,14 @@ async function sendToLLM(userInput: string) {
       optionsContainer.style.display = 'none';
       inputBar.style.display = 'none';
       reportContainer.style.display = 'block';
-      renderReport(response.message, skinMetrics!, reportContainer);
+      renderReport(response.message, skinMetrics!, reportContainer, response.assessment);
+      if (response.assessment) {
+        void saveConsultationToHistory(skinMetrics!, {
+          completedAt: Date.now(),
+          assessment: response.assessment,
+          report: response.message,
+        });
+      }
 
       // Setup "New Consultation" button
       const newChatBtn = document.getElementById('report-new-chat-btn');
@@ -688,29 +746,17 @@ async function sendToLLM(userInput: string) {
         "I've collected your scan details and lifestyle answers. Ready to see your comprehensive health report?";
       addAIMessage(msgText);
 
-      if (response.options && response.options.length > 0) {
-        setTimeout(
-          () => {
-            renderOptionCards(response.options!);
-          },
-          Math.min(msgText.length * 15, 1200)
-        );
-      } else if (
-        questionCount >= 6 ||
-        msgText.toLowerCase().includes('ready') ||
-        msgText.toLowerCase().includes('report') ||
-        msgText.toLowerCase().includes('synthesized')
-      ) {
-        // Automatically provide Generate Report CTA button
-        setTimeout(
-          () => {
-            renderOptionCards([
-              { emoji: '📋', label: 'Yes, generate my report!', value: 'generate_report' },
-              { emoji: '💬', label: 'I have more to share', value: 'more_info' },
-            ]);
-          },
-          Math.min(msgText.length * 15, 1000)
-        );
+      // The model's own options; otherwise the report buttons, but only when the
+      // message offers the report (a follow-up question gets a typed answer instead).
+      const options = response.options?.length
+        ? response.options
+        : offersReport(msgText)
+          ? REPORT_OPTIONS
+          : [];
+      reportOffered = options.some((o) => o.value === 'generate_report');
+      updateQuestionCounter();
+      if (options.length > 0) {
+        setTimeout(() => renderOptionCards(options), Math.min(msgText.length * 15, 1200));
       }
     }
   } catch (err: any) {
@@ -727,7 +773,7 @@ async function sendToLLM(userInput: string) {
 
 function updateQuestionCounter() {
   if (questionCounter) {
-    questionCounter.textContent = `Question ${questionCount} of ~6`;
+    questionCounter.textContent = questionCounterText(questionCount, reportOffered);
   }
 }
 
@@ -754,7 +800,22 @@ function typewriterEffect(el: HTMLElement, text: string) {
 }
 
 function formatMessageText(text: string): string {
-  return text
+  if (!text) return '';
+  let cleaned = text.trim();
+
+  // Guard against any raw JSON remnants
+  if (cleaned.startsWith('{') && cleaned.includes('"message"')) {
+    const match = cleaned.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (match && match[1]) {
+      try {
+        cleaned = JSON.parse(`"${match[1]}"`);
+      } catch {
+        cleaned = match[1];
+      }
+    }
+  }
+
+  return cleaned
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/\n/g, '<br>');
@@ -764,27 +825,4 @@ function escapeHTML(str: string): string {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
-}
-
-function getDefaultMetrics(): SkinMetrics {
-  return {
-    health: 55,
-    glow: 50,
-    hydration: 40,
-    melanin: 18,
-    erythema: 128,
-    oiliness: 12,
-    pores: 8,
-    texture: 45,
-    wrinkles: 3,
-    fatigue: 0.28,
-    darkCircles: 20,
-    heartRate: 72,
-    perfusion: 65,
-    yellowness: 125,
-    imageQuality: 75,
-    acne: 5,
-    uvDamage: 25,
-    elasticity: 60,
-  };
 }

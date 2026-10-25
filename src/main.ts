@@ -17,13 +17,13 @@
 import './app_clean.css';
 import { setupFaceLandmarker, cleanupFaceLandmarker } from './tasks/face-landmarker';
 import { setupHealthChat, cleanupHealthChat } from './tasks/health-chat';
+import { setupProgressDashboard, cleanupProgressDashboard } from './tasks/progress-dashboard';
 
 import { renderSidebar } from './ui/sidebar';
 import { renderMobileNav } from './ui/mobile-nav';
 import landingTemplate from './templates/landing.html?raw';
 import loginTemplate from './templates/login.html?raw';
 import registerTemplate from './templates/register.html?raw';
-import dashboardTemplate from './templates/dashboard.html?raw';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -93,36 +93,7 @@ export function initApp() {
       },
       cleanup: () => {},
     },
-    '/dashboard': {
-      template: dashboardTemplate,
-      label: 'Customer Dashboard',
-      setup: async (container: HTMLElement) => {
-        container.innerHTML = dashboardTemplate;
-
-        // Populate dynamic data (e.g., historical scans from localStorage)
-        try {
-          const history = JSON.parse(localStorage.getItem('ayurgenx_scan_history') || '[]');
-          if (history.length > 0) {
-            const tbody = container.querySelector('#history-rows');
-            if (tbody) {
-              tbody.innerHTML = '';
-              history.forEach((scan: any) => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                <td>${scan.id}</td>
-                <td><strong>${scan.health}%</strong></td>
-                <td>${scan.hydration}%</td>
-                <td>${scan.erythema}%</td>
-                <td><span style="color:#34c759; font-weight:600;">Recorded</span></td>
-              `;
-                tbody.appendChild(tr);
-              });
-            }
-          }
-        } catch (e) {}
-      },
-      cleanup: () => {},
-    },
+    '/dashboard': { setup: setupProgressDashboard, cleanup: cleanupProgressDashboard, label: 'My Progress' },
     // Keep your existing MediaPipe tasks if needed
     '/face-landmarker': { setup: setupFaceLandmarker, cleanup: cleanupFaceLandmarker, label: 'Face Landmarker' },
     '/health-chat': { setup: setupHealthChat, cleanup: cleanupHealthChat, label: 'Health Chat' },
@@ -192,11 +163,16 @@ export function initApp() {
     return '/landing';
   }
 
+  let navigation = 0;
+  let latestRoute: (typeof routes)[keyof typeof routes] | undefined;
+
   async function router() {
     const rawHash = window.location.hash.slice(1);
     const targetRouteKey = resolveRoute(rawHash);
 
     const route = routes[targetRouteKey as keyof typeof routes];
+    const thisNavigation = ++navigation;
+    latestRoute = route;
 
     // Cleanup previous task/view
     if (currentCleanup) {
@@ -210,6 +186,12 @@ export function initApp() {
     // Setup new template/task view
     if (route && typeof route.setup === 'function') {
       await route.setup(mainContent);
+      if (thisNavigation !== navigation) {
+        // The user moved on while this page was still loading: the newer page owns the
+        // screen, title and clean-up now. Undo this one (unless it is the same page again).
+        if (route !== latestRoute) route.cleanup();
+        return;
+      }
       currentCleanup = route.cleanup;
       document.title = `${route.label} - AyurGenX`;
     }
@@ -228,9 +210,9 @@ export function initApp() {
   }
 
   window.addEventListener('hashchange', router);
-  window.addEventListener('load', router);
 
-  // Initialize router immediately to handle initial load
+  // Initialize router immediately to handle initial load. (No extra 'load'
+  // listener: the app now starts before 'load', so it would set the page up twice.)
   router();
 
   // Expose cleanup method for testing environments to prevent leaks between tests
@@ -242,7 +224,8 @@ export function initApp() {
   };
 }
 
-(window as any).startApp = initApp;
+// The skin engine is plain TypeScript, so nothing has to load before the app starts.
+initApp();
 
 // ── Auth Pages Interactive Logic (Password See/No-See, Strength Meter, Security) ──
 function setupAuthPage(container: HTMLElement, isRegister: boolean = false) {
